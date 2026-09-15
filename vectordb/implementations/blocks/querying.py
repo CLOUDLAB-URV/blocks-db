@@ -11,6 +11,7 @@ import csv
 import io
 
 from vectordb.core.querying import QueryStrategy
+from vectordb.implementations.blocks.indexing import apply_search_parameters
 
 
 def _centroid_tags_match(centroid_tags, filter_tags):
@@ -191,6 +192,7 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
     for file_idx, (key, queries) in enumerate(queries_json.items()):
         storage.download_file(config.storage_bucket, key, f'/tmp/index_{file_idx}.ann')
         index = faiss.read_index(f'/tmp/index_{file_idx}.ann')
+        apply_search_parameters(index, config.n_probe)
 
         centroid_tags = {}
         reverse_data = None
