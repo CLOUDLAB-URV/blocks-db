@@ -44,6 +44,16 @@ source venv/bin/activate
 pip install .
 ```
 
+### Development
+
+```bash
+# Install with the test runner
+pip install -e ".[dev]"
+
+# Run the unit tests: they use fakes and a local temporary directory, no AWS account needed
+pytest tests/unit
+```
+
 ---
 
 ## 🚀 Quickstart (minimal workflow)
