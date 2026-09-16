@@ -8,6 +8,8 @@ from vectordb.client import VectorDBClient
 client = VectorDBClient(bucket="your-bucket", region="us-east-1")
 # With SQS:
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", sqs_queue_url="https://sqs...")
+# With a DynamoDB table other than BlocksDB-default:
+client = VectorDBClient(bucket="your-bucket", region="us-east-1", dynamodb_table_name="your-table")
 ```
 
 ## Dataset Management

@@ -82,8 +82,8 @@ from .utils.s3_utils import is_s3express_bucket
 
 class VectorDBClient:
 
-    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None):
-        """Initialize client with S3 bucket, optional region and SQS queue URL."""
+    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, dynamodb_table_name: str = None):
+        """Initialize client with S3 bucket, optional region, SQS queue URL and DynamoDB table name."""
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url
 
@@ -92,7 +92,7 @@ class VectorDBClient:
         else:
             self.s3 = boto3.client("s3")
 
-        self.tracker = VectorIndexTracker(bucket, region, sqs_queue_url=sqs_queue_url)
+        self.tracker = VectorIndexTracker(bucket, region, sqs_queue_url=sqs_queue_url, table_name=dynamodb_table_name)
 
     def create_dataset(self, name: str, csv_path: str):
         """
@@ -299,12 +299,8 @@ class VectorDBClient:
     def _setup_auto_indexer_state(self, dataset_name: str, config: dict):
         """Set up DynamoDB state for auto-indexer to continue from where manual indexing left off."""
 
-        dynamodb = boto3.resource("dynamodb")
-
-        table_name = "BlocksDB-default"
-        
         try:
-            table = dynamodb.Table(table_name)
+            table = self.tracker.table
             num_index = config.get("num_index", 16)
             
             table.update_item(
@@ -321,14 +317,8 @@ class VectorDBClient:
 
         implementation = config.get("implementation", "blocks")
 
-        table_name = "BlocksDB-default"
-
         s3 = boto3.client("s3")
-        try:
-            dynamodb = boto3.resource("dynamodb")
-            table = dynamodb.Table(table_name)
-        except Exception:
-            return
+        table = self.tracker.table
 
         written = 0
         for cid in range(num_index):
@@ -840,7 +830,7 @@ class VectorDBClient:
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
-        config["dynamodb_table_name"] = self.tracker.DYNAMODB_TABLE_NAME
+        config["dynamodb_table_name"] = self.tracker.table_name
         config["dynamodb_region"] = self.tracker.dynamodb.meta.client.meta.region_name
 
         if batch_size is not None:

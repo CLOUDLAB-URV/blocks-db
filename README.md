@@ -113,6 +113,12 @@ blocks-db configure --bucket your-s3-bucket --region us-east-1 --sqs
 
 This saves configuration to `~/.blocks-db-config/backend_config.json`.
 
+The client keeps its tracking state in the DynamoDB table `BlocksDB-default`.
+When several deployments share one AWS account, give each one its own table:
+`--table-name` on `configure` saves it, and the global `--table-name` flag or
+the `SVDB_DYNAMODB_TABLE` environment variable override it for one command.
+`setup --table-name` also saves the name it creates.
+
 ---
 
 ## 🚦 Auto-Indexer Modes
@@ -356,7 +362,7 @@ blocks-db status mydataset -v
 | Command | Description | Usage |
 |---------|-------------|-------|
 | `setup` | Create infrastructure (Lambda, DynamoDB, SQS/S3 triggers) | `blocks-db setup --bucket <b> [--sqs \| --s3express]` |
-| `configure` | Save default bucket and region | `blocks-db configure --bucket <b> --region <r> [--sqs]` |
+| `configure` | Save default bucket, region and DynamoDB table | `blocks-db configure --bucket <b> --region <r> [--sqs] [--table-name <t>]` |
 | `refresh-credentials` | Refresh AWS credentials in Lithops config | `blocks-db refresh-credentials` |
 | `update-threshold` | Update auto-indexer block size threshold | `blocks-db update-threshold [bytes] --dataset <name>` |
 | `initialize-database` | Upload dataset and build initial index | `blocks-db initialize-database <n> <csv> --config <j> [--build-local]` |
