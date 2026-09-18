@@ -9,6 +9,8 @@ from collections import defaultdict
 import os
 import csv
 import io
+import shutil
+import tempfile
 
 from vectordb.core.querying import QueryStrategy
 from vectordb.implementations.blocks.indexing import apply_search_parameters
@@ -189,9 +191,15 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
 
     res_queries = defaultdict(list)
 
+    # one private directory per task: map tasks that share a filesystem
+    # (the localhost backend, or several tasks in one container) must
+    # not download their blocks to the same fixed path
+    workdir = tempfile.mkdtemp(prefix="blocksdb-query-")
+
     for file_idx, (key, queries) in enumerate(queries_json.items()):
-        storage.download_file(config.storage_bucket, key, f'/tmp/index_{file_idx}.ann')
-        index = faiss.read_index(f'/tmp/index_{file_idx}.ann')
+        block_path = os.path.join(workdir, f'index_{file_idx}.ann')
+        storage.download_file(config.storage_bucket, key, block_path)
+        index = faiss.read_index(block_path)
         apply_search_parameters(index, config.n_probe)
 
         centroid_tags = {}
@@ -250,7 +258,8 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
                     res_queries[x].append([fd, fi])
                 else:
                     res_queries[x].append([d[x].tolist(), i[x].tolist()])
-        os.remove(f'/tmp/index_{file_idx}.ann')
+        os.remove(block_path)
+    shutil.rmtree(workdir, ignore_errors=True)
 
     final_results = {}
     for key, res in res_queries.items():
