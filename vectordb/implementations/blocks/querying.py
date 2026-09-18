@@ -266,7 +266,10 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
         concat_res = []
         for dists, ids in res:
             for dist, id in zip(dists, ids):
-                concat_res.append([id, dist, source])
+                # faiss pads a short result with id -1 and a huge distance
+                # when the probed lists hold fewer than k vectors
+                if id >= 0:
+                    concat_res.append([id, dist, source])
         seen = set()
         best_vectors = []
         for id, dist, src in sorted(concat_res, key=lambda x: x[1]):

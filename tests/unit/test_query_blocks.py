@@ -1,4 +1,4 @@
-"""The indexed search: each task owns its files."""
+"""The indexed search: n_probe governs it, each task owns its files, no sentinels."""
 
 import shutil
 from pathlib import Path
@@ -66,6 +66,25 @@ def two_cluster_block(tmp_path):
 
 def search(storage, config, blocks=(0,)):
     return querying._search_indexed(("q.json", list(blocks)), config.k_search, storage, config, 0.0)
+
+
+class TestNProbeGovernsTheSearch:
+    def test_widening_n_probe_reaches_the_second_list(self, two_cluster_block):
+        # the whole point of applying config.n_probe after read_index: with
+        # one list probed the far cluster is unreachable, with two it is
+        storage, _ = two_cluster_block
+        narrow = search(storage, params(n_probe=1))[0]
+        wide = search(storage, params(n_probe=2))[0]
+        assert len(narrow) == 6, narrow
+        assert len(wide) == 10
+        assert {row[0] for row in narrow} <= set(range(6))
+        assert {row[0] for row in wide} & set(range(6, 12))
+
+    def test_no_sentinel_id_is_returned_when_a_list_is_short(self, two_cluster_block):
+        storage, _ = two_cluster_block
+        hits = search(storage, params(n_probe=1))[0]
+        assert all(row[0] >= 0 for row in hits)
+        assert all(row[1] < 1e30 for row in hits)
 
 
 class TestEachTaskOwnsItsFiles:
