@@ -32,6 +32,32 @@ from .serverless_vectordb import ServerlessVectorDB
 BLOCK_SIZE = 500000  # ~500KB per block for CSV blocks
 
 
+class NoIndex(ValueError):
+    """A query asked for a dataset that has no index to search.
+
+    A ValueError still, so callers that caught the old one keep working."""
+
+
+class QueryMismatch(ValueError):
+    """A query the index cannot answer as it stands."""
+
+
+def check_queries(vectors, features):
+    """Stop a query that the index cannot answer before any function is invoked.
+
+    faiss asserts on the dimension inside the map function, with a message
+    that names neither the index nor the query, and an empty batch would
+    invoke the functions to search nothing.
+    """
+    if vectors.ndim != 2 or vectors.shape[0] == 0:
+        raise QueryMismatch(f"a query needs at least one vector, got an array of shape {vectors.shape}")
+    if vectors.shape[1] != features:
+        raise QueryMismatch(
+            f"the index holds vectors of {features} dimensions,"
+            f" the query has {vectors.shape[1]}"
+        )
+
+
 def build_csv_blocks_from_local(csv_path: str):
     """Read a local CSV file and build csv_blocks (byte-offset chunks) + last_vid.
 
@@ -680,29 +706,30 @@ class VectorDBClient:
     def _query_indexed_only(self, dataset_name: str, vectors_np: np.ndarray, k: int = None, batch_size: int = None, filter_tags: dict = None, filter_mode: str = "post"):
         """Query only the FAISS index (no pending vectors)."""
         k = k if k is not None else self._get_k_result(dataset_name)
-        
-        try:
-            sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
-            neighbours, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
-            if not neighbours:
-                neighbours = [[] for _ in range(len(vectors_np))]
-        except ValueError as e:
-            print(f"No index available: {e}")
+
+        sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
+        check_queries(vectors_np, sv_vectordb.params.features)
+        neighbours, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
+        if not neighbours:
             neighbours = [[] for _ in range(len(vectors_np))]
-            times = {"error": str(e)}
-        
+
         return neighbours, times
 
     def _query_hybrid(self, dataset_name: str, vectors_np: np.ndarray, k: int = None, batch_size: int = None, filter_tags: dict = None, filter_mode: str = "post"):
         """Internal hybrid query implementation."""
         k = k if k is not None else self._get_k_result(dataset_name)
 
+        # only a missing index is a fallback: a search that fails must not
+        # come back as no results at all
+        results = times = None
         try:
             sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
+        except NoIndex as missing:
+            no_index = missing
+        else:
+            no_index = None
+            check_queries(vectors_np, sv_vectordb.params.features)
             results, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
-        except ValueError:
-            results = None
-            times = {"error": "no index available"}
 
         if not results and self.has_pending_vectors(dataset_name):
             from .utils.hybrid_search import brute_force_search
@@ -714,6 +741,10 @@ class VectorDBClient:
                 times = {"fallback": "no index, searched pending only"}
 
         if not results:
+            if no_index is not None:
+                # nothing was searched: saying so beats an empty answer that
+                # reads like "no neighbours"
+                raise no_index
             results = [[] for _ in range(len(vectors_np))]
 
         times["hybrid_search"] = True
@@ -811,7 +842,7 @@ class VectorDBClient:
         indexes = self.list_indexes(dataset_name)
 
         if not indexes:
-            raise ValueError(f"No index found for dataset '{dataset_name}'. Run indexing first.")
+            raise NoIndex(f"No index found for dataset '{dataset_name}'. Run indexing first.")
 
         if len(indexes) > 1:
             raise ValueError(
@@ -834,6 +865,8 @@ class VectorDBClient:
         config["dynamodb_region"] = self.tracker.dynamodb.meta.client.meta.region_name
 
         if batch_size is not None:
+            if batch_size < 1:
+                raise QueryMismatch(f"the query batch size is how many blocks a function searches, so it must be at least 1, got {batch_size}")
             config["query_batch_size"] = batch_size
         if filter_tags is not None:
             config["filter_tags"] = filter_tags

@@ -77,6 +77,13 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", dynamodb_table
 | `tags` | `dict` | `None` | Batch-level tags for `put_vectors` |
 | `per_vector_tags` | `list[dict]` | `None` | Per-vector tags (3rd CSV column) |
 
+## Errors
+
+| Exception | Raised when |
+|-----------|-------------|
+| `NoIndex` (a `ValueError`) | A query names a dataset that has no index and no pending vectors: nothing could be searched |
+| `QueryMismatch` (a `ValueError`) | The query vectors do not have the index's dimension, the batch is empty, or `batch_size` is below 1 |
+
 ## Examples
 
 ### Create dataset and index

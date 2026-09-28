@@ -316,6 +316,10 @@ By default searches in index + pending. For index-only search:
 blocks-db query mydataset --file queries.csv --indexed-only
 ```
 
+A query that cannot be answered ends with a message and exit code 1 instead of
+an empty result: a dataset with no index and no pending vectors, a vector whose
+dimension is not the index's, or a `--batch-size` below 1.
+
 **Filtered search (requires tags on put):**
 ```bash
 # Only search centroids and pending files matching ALL specified tags
