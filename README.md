@@ -230,17 +230,17 @@ This requires an **index config file**. Example (`config.json`):
 |-----------|-------------|
 | `features` | Vector dimensionality |
 | `implementation` | "blocks" (default) — block-based indexing |
-| `num_index` | Number of index blocks (default: 16) |
-| `k` | FAISS IVF k (default: 512) |
-| `n_probe` | FAISS IVF n_probe (default: 32) |
-| `index_mem` | Index Lambda memory in MB (default: 10240) |
-| `search_map_mem` | Search map Lambda memory in MB (default: 8192) |
+| `num_index` | Number of index blocks (default: 4) |
+| `k` | FAISS IVF k (default: 4096) |
+| `n_probe` | FAISS IVF n_probe (default: 1024) |
+| `index_mem` | Index Lambda memory in MB (default: 8192) |
+| `search_map_mem` | Search map Lambda memory in MB (default: 9216) |
 | `search_reduce_mem` | Search reduce Lambda memory in MB (default: 2048) |
 | `replication` | Replication factor |
 | `num_vectors` | Total vectors in dataset (-1 = auto-detect) |
-| `k_search` | K for search calculation |
-| `k_result` | K for final results |
-| `query_batch_size` | Query batch size |
+| `k_search` | K for search calculation (default: 5) |
+| `k_result` | K for final results (default: 5) |
+| `query_batch_size` | Query batch size (default: 16) |
 | `num_centroids_search` | Centroids to search |
 | `skip_init` | Skip initialization |
 | `skip_kmeans` | Skip k-means clustering |
