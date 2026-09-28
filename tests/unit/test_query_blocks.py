@@ -1,4 +1,5 @@
-"""The indexed search: n_probe governs it, each task owns its files, no sentinels."""
+"""The indexed search: n_probe governs it, each task owns its files and cleans
+them up, tags are read per block, no sentinels."""
 
 import shutil
 from pathlib import Path
@@ -87,6 +88,25 @@ class TestNProbeGovernsTheSearch:
         assert all(row[1] < 1e30 for row in hits)
 
 
+class TestATagFilterReadsTheTagsOfTheBlockItSearched:
+    def test_the_block_id_names_the_tag_file_not_the_position_in_the_task(self, two_cluster_block):
+        # a task may search any subset of the blocks, so the tag file is
+        # looked up by the block's own id: searching block 3 alone must read
+        # block 3's tags, not block 0's
+        storage, _ = two_cluster_block
+        block = storage.get_object("bucket", "indexes/ds/blocks/centroid_0.ann")
+        storage.put_object("bucket", "indexes/ds/blocks/centroid_3.ann", block)
+        storage.put_object("bucket", "indexes/ds/blocks/centroid_0_tags.json", orjson.dumps({}))
+        storage.put_object(
+            "bucket", "indexes/ds/blocks/centroid_3_tags.json",
+            orjson.dumps({str(i): {"source": "web" if i % 2 == 0 else "feed"} for i in range(6)}),
+        )
+
+        hits = search(storage, params(filter_tags={"source": "web"}), blocks=(3,))[0]
+
+        assert {row[0] for row in hits} == {0, 2, 4}
+
+
 class TestEachTaskOwnsItsFiles:
     def test_two_searches_never_share_a_local_path(self, two_cluster_block):
         # two map tasks on one filesystem used to overwrite and delete
@@ -97,3 +117,23 @@ class TestEachTaskOwnsItsFiles:
         assert len(storage.downloads) == 2
         assert len(set(storage.downloads)) == 2
         assert not any(path.startswith("/tmp/index_") for path in storage.downloads)
+
+    def test_the_working_directory_is_removed_even_when_the_search_fails(self, two_cluster_block, monkeypatch, tmp_path):
+        storage, _ = two_cluster_block
+        created: list[str] = []
+        real_mkdtemp = querying.tempfile.mkdtemp
+
+        def mkdtemp(prefix="", **kwargs):
+            path = real_mkdtemp(prefix=prefix, dir=str(tmp_path))
+            created.append(path)
+            return path
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(querying.tempfile, "mkdtemp", mkdtemp)
+        monkeypatch.setattr(querying.faiss, "read_index", explode)
+        with pytest.raises(RuntimeError):
+            search(storage, params())
+        assert created, "the search did not create a working directory"
+        assert [path for path in created if Path(path).exists()] == []

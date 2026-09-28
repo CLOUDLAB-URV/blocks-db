@@ -195,71 +195,72 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
     # (the localhost backend, or several tasks in one container) must
     # not download their blocks to the same fixed path
     workdir = tempfile.mkdtemp(prefix="blocksdb-query-")
+    try:
+        for file_idx, (key, queries) in enumerate(queries_json.items()):
+            block_path = os.path.join(workdir, f'index_{file_idx}.ann')
+            storage.download_file(config.storage_bucket, key, block_path)
+            index = faiss.read_index(block_path)
+            apply_search_parameters(index, config.n_probe)
 
-    for file_idx, (key, queries) in enumerate(queries_json.items()):
-        block_path = os.path.join(workdir, f'index_{file_idx}.ann')
-        storage.download_file(config.storage_bucket, key, block_path)
-        index = faiss.read_index(block_path)
-        apply_search_parameters(index, config.n_probe)
-
-        centroid_tags = {}
-        reverse_data = None
-        if filter_tags:
-            cid = queries_key[1][file_idx] if file_idx < len(queries_key[1]) else None
-            if cid is not None:
-                tags_key = f'indexes/{config.dataset}/{config.implementation}/centroid_{cid}_tags.json'
-                try:
-                    raw = storage.get_object(bucket=config.storage_bucket, key=tags_key)
-                    if isinstance(raw, bytes):
-                        raw = raw.decode()
-                    centroid_tags = json.loads(raw)
-                except Exception:
-                    pass
-
-                if filter_mode == 'pre':
-                    reverse_key = tags_key.replace('_tags.json', '_reverse_tags.json')
+            centroid_tags = {}
+            reverse_data = None
+            if filter_tags:
+                cid = queries_key[1][file_idx] if file_idx < len(queries_key[1]) else None
+                if cid is not None:
+                    tags_key = f'indexes/{config.dataset}/{config.implementation}/centroid_{cid}_tags.json'
                     try:
-                        raw = storage.get_object(bucket=config.storage_bucket, key=reverse_key)
+                        raw = storage.get_object(bucket=config.storage_bucket, key=tags_key)
                         if isinstance(raw, bytes):
                             raw = raw.decode()
-                        reverse_data = json.loads(raw)
+                        centroid_tags = json.loads(raw)
                     except Exception:
                         pass
 
-        if filter_mode == 'pre' and filter_tags and reverse_data:
-            matching_ids = None
-            for fk, fv in filter_tags.items():
-                ids = set(reverse_data.get(f"{fk}:{fv}", []))
-                matching_ids = ids if matching_ids is None else matching_ids & ids
-            if matching_ids:
-                sel = faiss.IDSelectorBatch(list(matching_ids))
-                d, i = index.search(np.array(queries), k,
-                                    params=faiss.SearchParametersIVF(sel=sel))
-                for x in range(len(queries)):
-                    res_queries[x].append([d[x].tolist(), i[x].tolist()])
+                    if filter_mode == 'pre':
+                        reverse_key = tags_key.replace('_tags.json', '_reverse_tags.json')
+                        try:
+                            raw = storage.get_object(bucket=config.storage_bucket, key=reverse_key)
+                            if isinstance(raw, bytes):
+                                raw = raw.decode()
+                            reverse_data = json.loads(raw)
+                        except Exception:
+                            pass
+
+            if filter_mode == 'pre' and filter_tags and reverse_data:
+                matching_ids = None
+                for fk, fv in filter_tags.items():
+                    ids = set(reverse_data.get(f"{fk}:{fv}", []))
+                    matching_ids = ids if matching_ids is None else matching_ids & ids
+                if matching_ids:
+                    sel = faiss.IDSelectorBatch(list(matching_ids))
+                    d, i = index.search(np.array(queries), k,
+                                        params=faiss.SearchParametersIVF(sel=sel))
+                    for x in range(len(queries)):
+                        res_queries[x].append([d[x].tolist(), i[x].tolist()])
+                else:
+                    for x in range(len(queries)):
+                        res_queries[x].append([[], []])
             else:
+                search_k = k * overfetch if filter_tags else k
+                d, i = index.search(np.array(queries), search_k)
                 for x in range(len(queries)):
-                    res_queries[x].append([[], []])
-        else:
-            search_k = k * overfetch if filter_tags else k
-            d, i = index.search(np.array(queries), search_k)
-            for x in range(len(queries)):
-                if filter_tags and centroid_tags:
-                    fd, fi = [], []
-                    for dist, idx in zip(d[x], i[x]):
-                        vt = centroid_tags.get(str(int(idx)))
-                        if vt is not None:
-                            if all(vt.get(tk) == tv for tk, tv in filter_tags.items()):
+                    if filter_tags and centroid_tags:
+                        fd, fi = [], []
+                        for dist, idx in zip(d[x], i[x]):
+                            vt = centroid_tags.get(str(int(idx)))
+                            if vt is not None:
+                                if all(vt.get(tk) == tv for tk, tv in filter_tags.items()):
+                                    fd.append(float(dist))
+                                    fi.append(int(idx))
+                            elif not centroid_tags:
                                 fd.append(float(dist))
                                 fi.append(int(idx))
-                        elif not centroid_tags:
-                            fd.append(float(dist))
-                            fi.append(int(idx))
-                    res_queries[x].append([fd, fi])
-                else:
-                    res_queries[x].append([d[x].tolist(), i[x].tolist()])
-        os.remove(block_path)
-    shutil.rmtree(workdir, ignore_errors=True)
+                        res_queries[x].append([fd, fi])
+                    else:
+                        res_queries[x].append([d[x].tolist(), i[x].tolist()])
+            os.remove(block_path)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
     final_results = {}
     for key, res in res_queries.items():
