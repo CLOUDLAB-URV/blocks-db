@@ -29,6 +29,7 @@ blocks-db = "vectordb.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: runs the Lithops localhost backend end to end"]
 
 [tool.setuptools.packages.find]
 where = ["."]

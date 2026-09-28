@@ -52,6 +52,9 @@ pip install -e ".[dev]"
 
 # Run the unit tests: they use fakes and a local temporary directory, no AWS account needed
 pytest tests/unit
+
+# Run the integration tests: Lithops on this machine, no AWS account needed
+pytest tests/integration
 ```
 
 ---

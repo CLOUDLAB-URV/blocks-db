@@ -7,14 +7,15 @@ from .orchestration.orchestrator import Orchestrator
 
 class ServerlessVectorDB():
     
-    def __init__(self, **parameters):
+    def __init__(self, wait_timeout=None, **parameters):
         self.params: SvlessVectorDBParams = SvlessVectorDBParams(**parameters)
+        self.wait_timeout = wait_timeout
         self.indexing_executor = FunctionExecutor()
-        self.orchestrator = Orchestrator(self.params)
+        self.orchestrator = Orchestrator(self.params, wait_timeout=wait_timeout)
         
     def indexing(self, filename, num_workers):
         if not self.params.skip_init:
-            return initialize_database(filename, self.params, self.indexing_executor, num_workers)
+            return initialize_database(filename, self.params, self.indexing_executor, num_workers, self.wait_timeout)
         return {}
         
     def search(self, id, query_vector, filter_tags=None):
