@@ -44,6 +44,7 @@ def _run():
     parser.add_argument("--bucket", help="S3 bucket")
     parser.add_argument("--region", help="AWS region")
     parser.add_argument("--table-name", help="DynamoDB table (default: BlocksDB-default)")
+    parser.add_argument("--wait-timeout", type=float, help="Seconds without any function finishing before a build or a query gives up (default: the function timeout + 60; 0 waits for ever)")
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -78,6 +79,7 @@ def _run():
     configure_parser.add_argument("--region", default="us-east-1", help="AWS region")
     configure_parser.add_argument("--sqs", action="store_true", help="Use SQS for auto-indexer notifications")
     configure_parser.add_argument("--table-name", default=argparse.SUPPRESS, help="DynamoDB table used by the client")
+    configure_parser.add_argument("--wait-timeout", type=float, default=argparse.SUPPRESS, help="Seconds without any function finishing before giving up (0 waits for ever)")
 
     # ── initialize-database ───────────────────────────────────
     init_parser = subparsers.add_parser("initialize-database", help="Upload initial dataset and create index")
@@ -157,6 +159,9 @@ def _run():
     bucket = args.bucket or os.getenv("SVDB_BUCKET") or file_config.get("bucket")
     region = args.region or os.getenv("SVDB_REGION") or file_config.get("region")
     table_name = args.table_name or os.getenv("SVDB_DYNAMODB_TABLE") or file_config.get("dynamodb_table_name")
+    wait_timeout = args.wait_timeout
+    if wait_timeout is None:
+        wait_timeout = float(os.environ["SVDB_WAIT_TIMEOUT"]) if os.getenv("SVDB_WAIT_TIMEOUT") else file_config.get("wait_timeout")
 
     commands_without_bucket = ["setup", "configure"]
     if args.command not in commands_without_bucket and not bucket:
@@ -167,7 +172,7 @@ def _run():
     sqs_queue_url = file_config.get("sqs_queue_url")
     client = None
     if args.command not in commands_without_bucket:
-        client = VectorDBClient(bucket=bucket, region=region, sqs_queue_url=sqs_queue_url, dynamodb_table_name=table_name)
+        client = VectorDBClient(bucket=bucket, region=region, sqs_queue_url=sqs_queue_url, dynamodb_table_name=table_name, wait_timeout=wait_timeout)
 
     def _fmt_result(r):
         if len(r) == 3:
@@ -247,6 +252,8 @@ def _run():
         config_data = {"bucket": args.bucket, "region": args.region}
         if args.table_name:
             config_data["dynamodb_table_name"] = args.table_name
+        if args.wait_timeout is not None:
+            config_data["wait_timeout"] = args.wait_timeout
         if use_s3express:
             config_data["s3express"] = True
             az = parse_express_az(args.bucket)

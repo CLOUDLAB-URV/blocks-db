@@ -131,6 +131,7 @@ class TestCli:
             "region": "us-east-1",
             "sqs_queue_url": None,
             "dynamodb_table_name": "saved-table",
+            "wait_timeout": None,
         }
 
     def test_the_global_flag_also_reaches_configure_and_setup(self, cli_env, monkeypatch):

@@ -28,6 +28,7 @@ def client_with(monkeypatch, indexes, pending=(), search=None):
     """A client whose dataset ``ds`` has those indexes and pending vectors."""
     client = object.__new__(VectorDBClient)
     client.bucket = "bucket"
+    client.wait_timeout = None
     client.tracker = SimpleNamespace(
         table_name="table",
         dynamodb=SimpleNamespace(meta=SimpleNamespace(client=SimpleNamespace(meta=SimpleNamespace(region_name="region")))),

@@ -108,10 +108,16 @@ from .utils.s3_utils import is_s3express_bucket
 
 class VectorDBClient:
 
-    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, dynamodb_table_name: str = None):
-        """Initialize client with S3 bucket, optional region, SQS queue URL and DynamoDB table name."""
+    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, dynamodb_table_name: str = None, wait_timeout: float = None):
+        """Initialize client with S3 bucket, optional region, SQS queue URL and DynamoDB table name.
+
+        ``wait_timeout`` is how many seconds a build or a query waits without
+        any function finishing before it gives up: None derives it from the
+        backend's function timeout, 0 waits for ever.
+        """
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url
+        self.wait_timeout = wait_timeout
 
         if region:
             self.s3 = boto3.client("s3", region_name=region)
@@ -254,7 +260,7 @@ class VectorDBClient:
         config["storage_bucket"] = self.bucket
 
         print(f"Initializing ServerlessVectorDB for dataset '{dataset_name}'...")
-        sv_vectordb = ServerlessVectorDB(**config)
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)
 
         filename = f"datasets/{dataset_name}/source.csv"
 
@@ -417,7 +423,7 @@ class VectorDBClient:
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
         
-        sv_vectordb = ServerlessVectorDB(**config)
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)
         filename = f"datasets/{dataset_name}/source.csv"
         
         print("Rebuilding indexes with pending vectors...")
@@ -872,4 +878,4 @@ class VectorDBClient:
             config["filter_tags"] = filter_tags
         config["filter_mode"] = filter_mode
 
-        return ServerlessVectorDB(**config)
+        return ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)

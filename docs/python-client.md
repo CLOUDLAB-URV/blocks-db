@@ -10,6 +10,9 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1")
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", sqs_queue_url="https://sqs...")
 # With a DynamoDB table other than BlocksDB-default:
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", dynamodb_table_name="your-table")
+# Seconds without any function finishing before a build or a query gives up
+# (default: the function timeout + 60; 0 waits for ever):
+client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1200)
 ```
 
 ## Dataset Management

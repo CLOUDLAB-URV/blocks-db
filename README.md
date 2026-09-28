@@ -122,6 +122,12 @@ When several deployments share one AWS account, give each one its own table:
 the `SVDB_DYNAMODB_TABLE` environment variable override it for one command.
 `setup --table-name` also saves the name it creates.
 
+A build or a query gives up when no function has finished for the function
+timeout plus a minute (see `vectordb/README.md`, Common Pitfalls). To change
+that window: `--wait-timeout` on `configure` saves it, and the global
+`--wait-timeout` flag or the `SVDB_WAIT_TIMEOUT` environment variable
+override it for one command; `0` waits for ever.
+
 ---
 
 ## 🚦 Auto-Indexer Modes
