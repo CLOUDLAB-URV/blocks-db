@@ -68,15 +68,17 @@ def delete_dataset(bucket, dataset_name):
     except:
         pass
 
-    processed_prefix = f"processed/{dataset_name}/"
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=processed_prefix):
-            if "Contents" in page:
-                objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
-                s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
-    except:
-        pass
+    # processed vectors, and the copies a parquet build uploaded from local
+    # files; a source read in place (s3://) is never under this prefix
+    for prefix in (f"processed/{dataset_name}/", f"datasets/{dataset_name}/source/"):
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                if "Contents" in page:
+                    objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
+                    s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        except:
+            pass
 
     from .index_ops import delete_indexes, delete_index_configs
     delete_indexes(bucket, dataset_name)

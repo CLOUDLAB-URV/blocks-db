@@ -12,7 +12,7 @@ import pytest
 from vectordb import cli
 from vectordb import client as client_module
 from vectordb.client import VectorDBClient
-from vectordb.utils.vector_tracking import VectorIndexTracker
+from vectordb.utils.vector_tracking import CounterUnavailable, VectorIndexTracker
 
 
 class FakeTable:
@@ -146,3 +146,21 @@ class TestCli:
         with pytest.raises(Captured):
             self.run(monkeypatch, "--bucket", "b", "status", "ds")
         assert built["dynamodb_table_name"] is None
+
+
+class TestSeedingTheIdCounter:
+    class RefusingTable:
+        def put_item(self, Item):
+            raise ValueError("Requested resource not found")
+
+    def test_by_default_a_failed_seed_is_only_printed(self, capsys):
+        tracker = VectorIndexTracker("bucket", "us-east-1", table_name="team-table")
+        tracker.table = self.RefusingTable()
+        tracker.initialize_next_id("ds", 10)
+        assert "Error initializing next_id" in capsys.readouterr().out
+
+    def test_a_strict_seed_names_the_table_and_region_when_it_fails(self):
+        tracker = VectorIndexTracker("bucket", "us-east-1", table_name="team-table")
+        tracker.table = self.RefusingTable()
+        with pytest.raises(CounterUnavailable, match=r"'ds' in DynamoDB table 'team-table' \(us-east-1\)"):
+            tracker.initialize_next_id("ds", 10, strict=True)

@@ -13,6 +13,10 @@ import time
 from .s3_client import s3
 
 
+class CounterUnavailable(RuntimeError):
+    """The id counter of a dataset could not be written."""
+
+
 class VectorIndexTracker:
     DYNAMODB_TABLE_NAME = "BlocksDB-default"
 
@@ -54,8 +58,13 @@ class VectorIndexTracker:
     def get_indexed_ids_key(self, dataset_name: str) -> str:
         return f"tracking/indexed_ids_{dataset_name}.json"
 
-    def initialize_next_id(self, dataset_name: str, next_id: int):
-        """Initialize the next available ID counter in DynamoDB for a dataset."""
+    def initialize_next_id(self, dataset_name: str, next_id: int, strict: bool = False):
+        """Initialize the next available ID counter in DynamoDB for a dataset.
+
+        By default a failed write is only printed. With ``strict`` it raises,
+        naming the table and region: a build that relies on the counter must
+        not go ahead without it.
+        """
         try:
             self.table.put_item(Item={
                 "centroid_id": f"{dataset_name}_ID_TRACKER",
@@ -65,6 +74,12 @@ class VectorIndexTracker:
             })
             print(f"Initialized next_id={next_id} for dataset '{dataset_name}' in DynamoDB")
         except Exception as e:
+            if strict:
+                region = self.dynamodb.meta.client.meta.region_name
+                raise CounterUnavailable(
+                    f"cannot seed the id counter of '{dataset_name}' in DynamoDB table"
+                    f" '{self.table_name}' ({region}): {e}"
+                ) from e
             print(f"Error initializing next_id in DynamoDB: {e}")
 
     def get_next_id_atomic(self, dataset_name: str, count: int) -> int:

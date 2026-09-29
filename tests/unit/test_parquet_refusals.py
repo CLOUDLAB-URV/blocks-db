@@ -1,0 +1,144 @@
+"""An index built from parquet refuses the CSV-path features it cannot
+serve, and says why, instead of answering with nothing or failing in S3."""
+
+from types import SimpleNamespace
+
+import pytest
+
+from vectordb import client as client_module
+from vectordb.client import NotAvailableOnParquet, VectorDBClient
+from vectordb.utils import dataset_ops, index_ops
+
+
+def client_for(monkeypatch, source_format):
+    """A client whose dataset ``ds`` has one index built from
+    ``source_format``: "parquet", "csv" (a config from before the parquet
+    path, without the key), or None for no index at all."""
+    client = object.__new__(VectorDBClient)
+    client.bucket = "bucket"
+    client.wait_timeout = None
+    client.tracker = SimpleNamespace(
+        table_name="table",
+        dynamodb=SimpleNamespace(meta=SimpleNamespace(client=SimpleNamespace(meta=SimpleNamespace(region_name="region")))),
+    )
+    indexes = [] if source_format is None else [("blocks", 4)]
+    config = {"num_index": 4} if source_format == "csv" else {"num_index": 4, "source_format": source_format}
+    monkeypatch.setattr(client, "list_indexes", lambda name: indexes)
+    monkeypatch.setattr(client_module, "load_index_config", lambda *args: dict(config))
+    return client
+
+
+class TestClient:
+    @pytest.mark.parametrize("call", [
+        lambda c: c.get_vectors("ds", [1]),
+        lambda c: c.list_vectors("ds", 10),
+        lambda c: c.list_vectors_paginated("ds", 0, 10),
+        lambda c: c.get_vector_ids_by_tags("ds", {"lang": "es"}),
+    ], ids=["get_vectors", "list_vectors", "list_vectors_paginated", "get_vector_ids_by_tags"])
+    def test_csv_path_reads_are_refused_by_name(self, monkeypatch, call):
+        client = client_for(monkeypatch, "parquet")
+        with pytest.raises(NotAvailableOnParquet, match="'ds' was built from parquet"):
+            call(client)
+
+    def test_reindexing_is_refused_before_anything_is_deleted(self, monkeypatch):
+        # it would delete every block and the id map, then fail on source.csv
+        client = client_for(monkeypatch, "parquet")
+        deleted = []
+        monkeypatch.setattr(client_module, "delete_indexes", lambda *args: deleted.append(args))
+        with pytest.raises(NotAvailableOnParquet, match="initialize-database --format parquet"):
+            client.reindex_pending("ds")
+        assert deleted == []
+
+    def test_a_csv_build_is_refused_before_it_overwrites_the_blocks(self, monkeypatch):
+        # indexing writes centroid_i.ann over the parquet blocks and leaves
+        # idmap/ behind, so the ids in the index no longer have provenance
+        client = client_for(monkeypatch, "parquet")
+        monkeypatch.setattr(client_module, "ServerlessVectorDB", lambda **config: pytest.fail("the build started"))
+        with pytest.raises(NotAvailableOnParquet, match="delete the dataset first"):
+            client.index_dataset("ds", {"implementation": "blocks", "num_index": 4})
+
+    def test_a_csv_source_is_refused_before_it_is_uploaded(self, monkeypatch, tmp_path):
+        client = client_for(monkeypatch, "parquet")
+        monkeypatch.setattr(client_module, "upload_dataset", lambda *args: pytest.fail("the upload started"))
+        source = tmp_path / "vectors.csv"
+        source.write_text("1,0.0 1.0\n")
+        with pytest.raises(NotAvailableOnParquet, match="another name"):
+            client.create_dataset("ds", str(source))
+
+    @pytest.mark.parametrize("source_format", ["csv", None])
+    def test_a_csv_build_still_runs_where_no_parquet_index_stands(self, monkeypatch, source_format):
+        client = client_for(monkeypatch, source_format)
+        uploaded = []
+        monkeypatch.setattr(client_module, "upload_dataset", lambda bucket, name, path: uploaded.append(name))
+        client.create_dataset("ds", __file__)
+        assert uploaded == ["ds"]
+
+    def test_a_tag_filter_is_refused_not_answered_with_nothing(self, monkeypatch):
+        # the query path turns a ValueError into empty results; this must get through
+        client = client_for(monkeypatch, "parquet")
+        with pytest.raises(NotAvailableOnParquet, match="tags"):
+            client.query_batch("ds", [[0.0, 1.0]], k=1, filter_tags={"lang": "es"})
+
+    def test_without_a_filter_a_parquet_index_is_still_queried(self, monkeypatch):
+        client = client_for(monkeypatch, "parquet")
+        monkeypatch.setattr(client_module, "ServerlessVectorDB", lambda **config: config)
+        assert client._load_default_index("ds")["source_format"] == "parquet"
+
+    def test_vectors_cannot_be_added_to_a_parquet_index(self, monkeypatch):
+        # their ids would collide with the positional ids and have no provenance
+        client = client_for(monkeypatch, "parquet")
+        written = []
+        client.tracker.put_vectors = lambda *args, **kwargs: written.append(args)
+        with pytest.raises(NotAvailableOnParquet, match="immutable"):
+            client.put_vector("ds", 7, [0.0, 1.0])
+        assert written == []
+
+    def test_vectors_are_still_added_to_a_csv_index(self, monkeypatch):
+        client = client_for(monkeypatch, "csv")
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        assert client.put_vectors("ds", [(7, [0.0, 1.0])]) == 1
+
+    @pytest.mark.parametrize("source_format", ["csv", None])
+    def test_csv_indexes_and_datasets_without_an_index_are_untouched(self, monkeypatch, source_format):
+        client = client_for(monkeypatch, source_format)
+        monkeypatch.setattr(client_module, "get_vectors_by_id", lambda *args: {"read": True})
+        assert client.get_vectors("ds", [1]) == {"read": True}
+
+
+class FakeBucket:
+    """The listing and deletes delete_dataset makes, over a set of keys."""
+
+    def __init__(self, keys):
+        self.keys = set(keys)
+
+    def delete_object(self, Bucket, Key):
+        self.keys.discard(Key)
+
+    def get_paginator(self, _name):
+        keys = self.keys
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]}
+
+        return Paginator()
+
+    def delete_objects(self, Bucket, Delete):
+        self.keys -= {item["Key"] for item in Delete["Objects"]}
+
+
+def test_deleting_a_dataset_removes_the_parquet_copies_it_uploaded(monkeypatch):
+    bucket = FakeBucket([
+        "datasets/ds/source/year=2026/language=spa/metadata_0_embeddings.parquet",
+        "datasets/ds/source/year=2026/language=deu/metadata_0_embeddings.parquet",
+        "datasets/ds-2/source/metadata_0_embeddings.parquet",  # another dataset
+        "owi/spa/metadata_0_embeddings.parquet",  # a source read in place
+    ])
+    monkeypatch.setattr(dataset_ops, "s3", bucket)
+    monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: None)
+    monkeypatch.setattr(index_ops, "delete_index_configs", lambda *args: None)
+    dataset_ops.delete_dataset("bucket", "ds")
+    assert bucket.keys == {
+        "datasets/ds-2/source/metadata_0_embeddings.parquet",
+        "owi/spa/metadata_0_embeddings.parquet",
+    }

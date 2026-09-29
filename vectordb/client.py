@@ -25,11 +25,21 @@ from .utils.index_ops import (
 )
 
 from .utils.vector_tracking import VectorIndexTracker
+from .utils.idmap import idmap_prefix, select as select_provenance
+from .indexing.prepare import prepare_build
 
 
 from .serverless_vectordb import ServerlessVectorDB
 
 BLOCK_SIZE = 500000  # ~500KB per block for CSV blocks
+
+
+class NotAvailableOnParquet(RuntimeError):
+    """A CSV-path feature asked of an index built from parquet."""
+
+
+class IndexExists(RuntimeError):
+    """A parquet build asked for a name that already holds an index."""
 
 
 class NoIndex(ValueError):
@@ -56,6 +66,25 @@ def check_queries(vectors, features):
             f"the index holds vectors of {features} dimensions,"
             f" the query has {vectors.shape[1]}"
         )
+
+
+TAGS_UNAVAILABLE = "a parquet build indexes no tags, so tag filters and get-by-tags are not available"
+VECTORS_UNAVAILABLE = (
+    "its vectors cannot be read back, since it keeps no source.csv;"
+    " provenance() maps ids to their source records"
+)
+PUT_UNAVAILABLE = (
+    "it is immutable: added vectors would reuse its positional ids and have no"
+    " provenance; build it again with the new sources included"
+)
+REINDEX_UNAVAILABLE = (
+    "reindexing deletes the blocks and rebuilds them from a source.csv it does not have;"
+    " build it again with initialize-database --format parquet"
+)
+CSV_BUILD_UNAVAILABLE = (
+    "a CSV build writes its blocks over the ones already there and orphans the id map;"
+    " delete the dataset first, or build under another name"
+)
 
 
 def build_csv_blocks_from_local(csv_path: str):
@@ -132,6 +161,8 @@ class VectorDBClient:
         Renames automatically to vectors_{name}.csv
         """
 
+        self.refuse_on_parquet(name, CSV_BUILD_UNAVAILABLE)
+
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"{csv_path} not found.")
 
@@ -159,6 +190,7 @@ class VectorDBClient:
         Returns:
             Number of vectors added
         """
+        self.refuse_on_parquet(dataset_name, PUT_UNAVAILABLE)
         key = self.tracker.put_vectors(dataset_name, vectors, tags=tags, per_vector_tags=per_vector_tags)
         print(f"Added {len(vectors)} vectors to pending storage for dataset '{dataset_name}' -> {key}")
         return len(vectors)
@@ -211,22 +243,40 @@ class VectorDBClient:
         for obj in response["Contents"]:
             key = obj["Key"]
 
-            if key.endswith("/source.csv"):
-                name = key.split("/")[1]
-                datasets.append(name)
+            # datasets/{name}/source.csv for a CSV build, and
+            # datasets/{name}/source/... for a parquet one
+            parts = key.split("/")
+            if len(parts) >= 3 and parts[0] == "datasets" and (
+                key.endswith("/source.csv") or parts[2] == "source"
+            ):
+                name = parts[1]
+                if name not in datasets:
+                    datasets.append(name)
 
         return datasets
 
+    def refuse_on_parquet(self, dataset_name: str, reason: str):
+        """Stop a CSV-path feature on an index built from parquet, before it
+        reads a source.csv that does not exist or deletes blocks it cannot
+        rebuild."""
+        for implementation, num_index in self.list_indexes(dataset_name):
+            config = load_index_config(self.bucket, dataset_name, implementation, num_index)
+            if config.get("source_format") == "parquet":
+                raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {reason}")
+
     def get_vectors(self, dataset_name: str, ids):
         """Get vectors by their IDs from the dataset."""
+        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
         return get_vectors_by_id(self.bucket, dataset_name, ids)
 
     def list_vectors(self, dataset_name: str, limit: int = 100):
         """List first N vectors from the dataset."""
+        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
         return list_vectors(self.bucket, dataset_name, limit)
 
     def list_vectors_paginated(self, dataset_name: str, start=0, limit=100):
         """List vectors with pagination (start offset, limit)."""
+        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
         return list_vectors_paginated(
             self.bucket,
             dataset_name,
@@ -255,6 +305,8 @@ class VectorDBClient:
         Returns:
             dict: Timing stats from the indexing process.
         """
+
+        self.refuse_on_parquet(dataset_name, CSV_BUILD_UNAVAILABLE)
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
@@ -317,6 +369,130 @@ class VectorDBClient:
 
         return total_times
     
+    def index_parquet_dataset(self, dataset_name: str, sources: List[str], config: dict, save_config: bool = True, replace: bool = False):
+        """Build an immutable index from parquet sources.
+
+        Local files are uploaded under ``datasets/{name}/source/``; ``s3://``
+        URIs are read in place. The plan is validated before any function
+        runs, and the configuration saved is the sealed one: what was
+        read, how many vectors, which dimension, how many blocks. This
+        path never calls ``_get_vector_count``, ``csv_blocks`` or the
+        auto-indexer set-up. Its only DynamoDB write sets the id counter to
+        the number of source rows, so ids handed out from the counter start
+        above the ids of the index; it happens before anything is uploaded
+        or invoked, and a seed that fails stops the build. A name that already holds an index is
+        refused unless ``replace`` is set, and then the old index is
+        deleted first: built beside it, a smaller build would leave old
+        blocks and id map parts to be served with the new ones.
+
+        Returns the indexing timers plus ``rows``, ``rejected`` and the
+        per-block reports.
+        """
+        # plan from the footers first: a build that cannot succeed
+        # must not have copied the corpus into the bucket beforehand
+        local = [source for source in sources if not source.startswith("s3://")]
+        for source in local:
+            if not os.path.exists(source):
+                raise FileNotFoundError(f"{source} not found.")
+        build_plan, sealed = prepare_build(list(sources), config)
+        prefix = f"indexes/{dataset_name}/{sealed['implementation']}/"
+        existing = sum(len(page.get("Contents", [])) for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix))
+        if existing and not replace:
+            raise IndexExists(
+                f"'{dataset_name}' already holds an index ({existing} objects under {prefix});"
+                " pass replace=True (--replace) to delete it and build again"
+            )
+        if existing:
+            self._delete_blocks(dataset_name, sealed["implementation"])
+        if save_config:
+            # the one DynamoDB write of this path goes first: a missing table
+            # or permission must cost no upload and no function. The seed is
+            # the footer total, so the gaps rejected rows leave in the id
+            # space are never handed out from the counter.
+            self.tracker.initialize_next_id(dataset_name, build_plan.total_vectors, strict=True)
+
+        root = os.path.commonpath([os.path.abspath(s) for s in local]) if local else ""
+        if local and os.path.isfile(root):
+            root = os.path.dirname(root)
+        uploaded = {}
+        for source in local:
+            # the key keeps the path below the common root, so the
+            # metadata_0_embeddings.parquet of two language partitions do
+            # not collide on one key and silently index one twice
+            relative = os.path.relpath(os.path.abspath(source), root) if root else os.path.basename(source)
+            key = f"datasets/{dataset_name}/source/{relative}"
+            self.s3.upload_file(source, self.bucket, key)
+            uploaded[os.path.abspath(source)] = f"s3://{self.bucket}/{key}"
+        sealed["source_keys"] = [
+            uploaded.get(os.path.abspath(uri), uri) for uri in sealed["source_keys"]
+        ]
+        build_plan = build_plan.with_sources(uploaded) if uploaded else build_plan
+
+        sealed["dataset"] = dataset_name
+        sealed["storage_bucket"] = self.bucket
+
+        print(f"Plan: {build_plan.total_vectors:,} rows in {build_plan.num_index} blocks"
+              f" (smallest {build_plan.min_block_rows:,}, largest {build_plan.max_block_rows:,},"
+              f" imbalance {build_plan.imbalance:.2f}x), dimension {build_plan.dimension}")
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **sealed)
+        print("Starting indexing...")
+        try:
+            times = sv_vectordb.indexing_from_plan(build_plan)
+        except BaseException:
+            # a half-built index must not survive: the blocks that did
+            # finish would otherwise be served under an older config.json.
+            # BaseException, not Exception: an interrupted client (Ctrl-C)
+            # leaves the same half-built index as a failed function
+            self._delete_blocks(dataset_name, sealed["implementation"])
+            raise
+        print(f"Indexing completed: {times['rows']:,} vectors kept, {times['rejected']:,} rows rejected.")
+
+        # what the build actually indexed, not what the footers promised
+        sealed["num_vectors"] = times["rows"]
+        sealed["rejected"] = times["rejected"]
+        if save_config:
+            t0 = time.time()
+            save_index_config(self.bucket, dataset_name, sealed, s3_client=self.s3)
+            times["save_config"] = time.time() - t0
+        return times
+
+    def _delete_blocks(self, dataset_name: str, implementation: str) -> None:
+        prefix = f"indexes/{dataset_name}/{implementation}/"
+        pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix)
+        keys = [{"Key": item["Key"]} for page in pages for item in page.get("Contents", [])]
+        for start in range(0, len(keys), 1000):
+            self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": keys[start:start + 1000]})
+        if keys:
+            print(f"Removed {len(keys)} objects of the failed build under {prefix}")
+
+    def provenance(self, dataset_name: str, ids, implementation: str = "blocks") -> dict:
+        """``{id: (record_id, chunk_idx)}`` for parquet-built blocks, read
+        from the ``idmap`` parts the build wrote next to the blocks.
+
+        Only the parts whose id range covers a wanted id are fetched, from
+        the ranges the build sealed into ``config.json``; without them
+        every part is read.
+        """
+        prefix = idmap_prefix(dataset_name, implementation)
+        wanted = sorted({int(value) for value in ids})
+        blocks = None
+        try:
+            config = load_index_config(self.bucket, dataset_name, implementation, None)
+            blocks = config.get("block_ranges")
+        except Exception:
+            blocks = None
+        if blocks:
+            needed = {
+                block for block, first, last in blocks
+                if any(first <= value <= last for value in wanted)
+            }
+            keys = [f"{prefix}block_{block}.parquet" for block in sorted(needed)]
+        else:
+            pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix)
+            keys = [item["Key"] for page in pages for item in page.get("Contents", [])]
+        parts = (self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read() for key in keys)
+        return select_provenance(parts, wanted)
+
     def _get_vector_count(self, dataset_name: str) -> int:
         """Count total vectors in dataset."""
         s3 = boto3.client("s3")
@@ -402,6 +578,7 @@ class VectorDBClient:
         Returns:
             Timing stats from the indexing process
         """
+        self.refuse_on_parquet(dataset_name, REINDEX_UNAVAILABLE)
         if not self.has_pending_vectors(dataset_name):
             print("No pending vectors to reindex.")
             return {}
@@ -558,6 +735,7 @@ class VectorDBClient:
 
     def get_vector_ids_by_tags(self, dataset_name: str, filter_tags: dict, limit: int = 100) -> List[int]:
         """Get vector IDs matching ALL filter tags by scanning centroid _tags.json files."""
+        self.refuse_on_parquet(dataset_name, TAGS_UNAVAILABLE)
         import json as _json
         s3 = boto3.client("s3")
         prefix = f"indexes/{dataset_name}/blocks/"
@@ -866,6 +1044,8 @@ class VectorDBClient:
             implementation,
             num_index
         )
+        if filter_tags and config.get("source_format") == "parquet":
+            raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {TAGS_UNAVAILABLE}")
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket

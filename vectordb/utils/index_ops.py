@@ -41,13 +41,15 @@ def delete_index_configs(bucket, dataset_name):
                 )
 
 
-def save_index_config(bucket, dataset_name, params: dict):
+def save_index_config(bucket, dataset_name, params: dict, s3_client=None):
+    """``s3_client`` lets a caller write through the client it already
+    holds, instead of the module-level one built at import time."""
     implementation = params["implementation"]
     num_index = params.get("num_index", 16)
 
     key = f"indexes/{dataset_name}/{implementation}/config.json"
 
-    s3.put_object(
+    (s3_client or s3).put_object(
         Bucket=bucket,
         Key=key,
         Body=json.dumps(params).encode("utf-8"),
