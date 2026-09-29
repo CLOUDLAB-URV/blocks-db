@@ -20,7 +20,7 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 | Method | Description |
 |--------|-------------|
 | `create_dataset(name, csv_path)` | Upload a local CSV file as a new dataset |
-| `delete_dataset(name)` | Delete dataset and all its data from S3 and DynamoDB |
+| `delete_dataset(name)` | Delete dataset and all its data from S3 and DynamoDB, including the parquet copies a build uploaded (never a source read in place) |
 | `list_datasets()` | List all datasets in the bucket |
 | `save_index_config(name, config)` | Save index configuration to S3 |
 | `delete_index_configs(name)` | Delete all saved config.json files for a dataset |
@@ -30,8 +30,8 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 
 | Method | Description |
 |--------|-------------|
-| `put_vectors(dataset_name, vectors, tags, per_vector_tags)` | Add vectors to pending storage (batch) |
-| `put_vector(dataset_name, vector_id, vector, tags, per_vector_tags)` | Add a single vector to pending storage |
+| `put_vectors(dataset_name, vectors, tags, per_vector_tags)` | Add vectors to pending storage (batch); refused on a parquet-built index, which is immutable |
+| `put_vector(dataset_name, vector_id, vector, tags, per_vector_tags)` | Add a single vector to pending storage; refused on a parquet-built index |
 | `get_pending_vectors(dataset_name)` | Get all pending (unindexed) vectors |
 | `has_pending_vectors(dataset_name)` | Check if there are pending vectors |
 | `mark_vectors_indexed(dataset_name, indexed_ids)` | Mark vectors as indexed |
@@ -41,21 +41,23 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 | Method | Description |
 |--------|-------------|
 | `query(dataset_name, vector, k, hybrid, batch_size, filter_tags, filter_mode)` | Single vector query (hybrid by default) |
-| `query_batch(dataset_name, vectors, k, hybrid, batch_size, filter_tags, filter_mode)` | Multi-vector query |
+| `query_batch(dataset_name, vectors, k, hybrid, batch_size, filter_tags, filter_mode)` | Multi-vector query; `filter_tags` is refused on a parquet-built index |
 | `query_hybrid(dataset_name, vectors, k, batch_size, filter_tags, filter_mode)` | Explicit hybrid query (alias for `query_batch` with `hybrid=True`) |
 | `query_indexed_only(dataset_name, vector, vectors, k, batch_size, filter_tags, filter_mode)` | Query only the FAISS index (skip pending) |
 | `query_from_file(dataset_name, csv_path, hybrid, k, batch_size, filter_tags, filter_mode)` | Query all vectors from a CSV file |
-| `get_vector_ids_by_tags(dataset_name, filter_tags, limit)` | Get vector IDs matching ALL filter tags |
-| `get_vectors(dataset_name, ids)` | Get vectors by their IDs |
-| `list_vectors(dataset_name, limit)` | List first N vectors |
-| `list_vectors_paginated(dataset_name, start, limit)` | List vectors with pagination |
+| `get_vector_ids_by_tags(dataset_name, filter_tags, limit)` | Get vector IDs matching ALL filter tags (refused on a parquet-built index, which has no tags) |
+| `get_vectors(dataset_name, ids)` | Get vectors by their IDs (refused on a parquet-built index; use `provenance`) |
+| `list_vectors(dataset_name, limit)` | List first N vectors (refused on a parquet-built index) |
+| `list_vectors_paginated(dataset_name, start, limit)` | List vectors with pagination (refused on a parquet-built index) |
 
 ## Index Management
 
 | Method | Description |
 |--------|-------------|
 | `index_dataset(dataset_name, config, num_workers, save_config, track_indexed, setup_auto_indexer, csv_blocks)` | Run full indexing pipeline |
-| `reindex_pending(dataset_name, config, num_workers)` | Rebuild all indexes with pending vectors included |
+| `index_parquet_dataset(dataset_name, sources, config, save_config, replace)` | Build an immutable index from parquet sources (see the parquet section of the README); requires `features`, `num_index` and `k` in the config; refuses a name that already holds an index unless `replace=True`, which deletes it first |
+| `provenance(dataset_name, ids, implementation)` | Map result ids back to `(record_id, chunk_idx)` for a parquet-built index |
+| `reindex_pending(dataset_name, config, num_workers)` | Rebuild all indexes with pending vectors included (refused on a parquet-built index, before anything is deleted) |
 | `index_pending_separate(dataset_name, config)` | Mark pending vectors as indexed without rebuilding |
 | `get_indexed_ids(dataset_name)` | Get all indexed vector IDs |
 | `get_indexed_count(dataset_name)` | Get count of indexed vectors from DynamoDB counter |

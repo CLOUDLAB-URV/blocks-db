@@ -408,6 +408,68 @@ blocks-db get mydataset --pending
 
 ## 📄 File Formats
 
+### Parquet vectors (`--format parquet`)
+
+An index can be built straight from parquet files, without converting them to
+CSV first:
+
+```bash
+blocks-db initialize-database mydata /path/to/day --format parquet --config config.json
+blocks-db initialize-database mydata s3://my-bucket/day/ --format parquet --config config.json
+```
+
+The source may be one file, a directory (every `*.parquet` under it, at any
+depth) or an `s3://` prefix. `--files` narrows a directory or a prefix to the
+file names matching a shell pattern. A day of the Open Web Index needs it: each
+language directory keeps a `_records` file beside its `_embeddings` file, and a
+build refuses a file that holds no vectors, naming it:
+
+```bash
+blocks-db initialize-database owi-day /data/owi/day --format parquet \
+  --files '*_embeddings.parquet' --config config.json
+```
+
+Two column layouts are recognized:
+
+| Dialect | Columns |
+|---------|---------|
+| canonical | `id` (int64), `vector` (list of float); any other column is ignored |
+| owi-v2 | `record_id` (string), `chunk_idx` (int), `embedding` (list of float16) |
+
+owi-v2 embeddings are published at unit length and stored in float16, which
+moves them slightly off it. The reader scales each vector back to length 1,
+so the index ranks exactly like the cosine. For a query at unit length, a
+returned distance is 2 − 2·cosine. A row that cannot be scaled (all zeros, or
+a non-finite value) is rejected like a row of the wrong length. The
+configuration saved with the index (`indexes/{dataset}/{impl}/config.json`)
+records `unit_norm: true`. Canonical vectors are indexed as written.
+
+The index configuration must declare `features` (the vector dimension),
+`num_index` and `k`; the build refuses to start otherwise, and the error
+suggests a `k` for the smallest block: 4·√rows, with the largest value FAISS
+trains beside it. The blocks are planned from the file footers, so their
+number is exactly `num_index` whatever the worker count, and every vector
+gets a dense positional id.
+
+What a parquet build does **not** do, by design: no CSV byte-offset blocks,
+no auto-indexer state, no tags. The index is immutable; rebuild it to change
+it. A build refuses a name that already holds an index; `--replace` deletes
+that index first. The commands that need what it lacks stop with an error
+that says so:
+`put` (added vectors would reuse its positional ids), `get` by id or with
+`--limit`, `get-by-tags`, `query --filter`, and `reindex_pending()`, which
+would otherwise delete the blocks before failing. To go from a result id to
+its source record, use `provenance()`. `delete-dataset` also removes the
+copies a build uploaded from local files; a source read in place from
+`s3://` is left untouched.
+
+Provenance is kept beside the blocks in `indexes/{dataset}/{impl}/idmap/`, so a
+result id maps back to the publisher's record:
+
+```python
+client.provenance("mydata", [12, 4096])   # {12: ("doc-3", 1), 4096: ("doc-987", 0)}
+```
+
 ### Vectors CSV
 
 The ID (integer), a comma, then the values separated by spaces.
