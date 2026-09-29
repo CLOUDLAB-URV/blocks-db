@@ -161,8 +161,13 @@ def _run():
     region = args.region or os.getenv("SVDB_REGION") or file_config.get("region")
     table_name = args.table_name or os.getenv("SVDB_DYNAMODB_TABLE") or file_config.get("dynamodb_table_name")
     wait_timeout = args.wait_timeout
+    if wait_timeout is None and os.getenv("SVDB_WAIT_TIMEOUT"):
+        try:
+            wait_timeout = float(os.environ["SVDB_WAIT_TIMEOUT"])
+        except ValueError:
+            parser.error(f"SVDB_WAIT_TIMEOUT must be a number of seconds, got '{os.environ['SVDB_WAIT_TIMEOUT']}'")
     if wait_timeout is None:
-        wait_timeout = float(os.environ["SVDB_WAIT_TIMEOUT"]) if os.getenv("SVDB_WAIT_TIMEOUT") else file_config.get("wait_timeout")
+        wait_timeout = file_config.get("wait_timeout")
 
     commands_without_bucket = ["setup", "configure"]
     if args.command not in commands_without_bucket and not bucket:

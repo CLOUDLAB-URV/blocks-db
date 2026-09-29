@@ -67,6 +67,12 @@ class TestCli:
             self.run(monkeypatch, "--bucket", "b", "status", "ds")
         assert built["wait_timeout"] == 900
 
+    def test_an_environment_value_that_is_not_a_number_is_refused(self, cli_env, monkeypatch, capsys):
+        monkeypatch.setenv("SVDB_WAIT_TIMEOUT", "soon")
+        with pytest.raises(SystemExit):
+            self.run(monkeypatch, "--bucket", "b", "status", "ds")
+        assert "SVDB_WAIT_TIMEOUT must be a number of seconds, got 'soon'" in capsys.readouterr().err
+
     def test_configure_saves_it_for_later_commands(self, cli_env, monkeypatch):
         config_file, built = cli_env
         self.run(monkeypatch, "configure", "--bucket", "b", "--wait-timeout", "1200")
