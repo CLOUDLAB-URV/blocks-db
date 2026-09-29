@@ -84,3 +84,65 @@ class TestCollect:
         executor = FakeExecutor({"lithops": {"backend": "localhost"}, "localhost": {}}, finishes_at=[None])
         assert run(executor, window=None) == [None]
         assert executor.calls == ["get_result"]
+
+
+class TestTheCallers:
+    """A query and a build wait through collect, with the window they were given."""
+
+    STATS = {"worker_func_start_tstamp": 1.0, "host_job_create_tstamp": 0.0}
+
+    def test_a_query_waits_for_its_map_and_its_reduce(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        from vectordb.orchestration import orchestrator
+
+        waited = []
+        monkeypatch.setattr(orchestrator, "collect", lambda fexec, futures, window=None: waited.append(window) or [])
+        search = object.__new__(orchestrator.Orchestrator)
+        search.wait_timeout = 300
+        search.config = SimpleNamespace(
+            dataset="ds", num_index=4, storage_bucket="bucket", implementation="blocks",
+            search_map_mem=1024, search_reduce_mem=1024, k_search=1, k_result=1,
+        )
+        search.function_executor = SimpleNamespace(
+            config={"lithops": {"backend": "localhost"}},
+            storage=SimpleNamespace(put_object=lambda **kwargs: None, delete_object=None),
+            map=lambda *args, **kwargs: [],
+        )
+        search.query_strategy = SimpleNamespace(create_map_tasks=lambda *args, **kwargs: [])
+        search.map_fn = search.reduce_fn = None
+        search.pool = SimpleNamespace(submit=lambda *args: None)
+        monkeypatch.setattr(search, "create_reduce_iterdata", lambda payload, k, per_task: ([], 0.0))
+        search.search("q", np.zeros((1, 2)))
+        assert waited == [300, 300]
+
+    def test_a_build_waits_for_its_blocks(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from vectordb.indexing import indexator
+
+        waited = []
+        monkeypatch.setattr(indexator, "collect", lambda fexec, futures, window=None: waited.append(window) or [1.0])
+        executor = SimpleNamespace(map=lambda *args, **kwargs: [SimpleNamespace(stats=self.STATS)])
+        params = SimpleNamespace(skip_kmeans=True, implementation="blocks", storage_bucket="bucket", num_index=4, index_mem=1024)
+        indexator.initialize_database("datasets/ds/source.csv", params, executor, 2, 300)
+        assert waited == [300]
+
+    def test_the_facade_hands_its_window_to_the_build_and_to_the_query(self, monkeypatch):
+        from vectordb import serverless_vectordb
+
+        handed = {}
+        monkeypatch.setattr(serverless_vectordb, "FunctionExecutor", lambda: "executor")
+        monkeypatch.setattr(
+            serverless_vectordb, "Orchestrator",
+            lambda params, wait_timeout=None: handed.update(query=wait_timeout),
+        )
+        monkeypatch.setattr(
+            serverless_vectordb, "initialize_database",
+            lambda filename, params, fexec, workers, wait_timeout=None: handed.update(build=wait_timeout),
+        )
+        db = serverless_vectordb.ServerlessVectorDB(wait_timeout=300, dataset="ds", storage_bucket="bucket")
+        db.indexing("datasets/ds/source.csv", 2)
+        assert handed == {"query": 300, "build": 300}
