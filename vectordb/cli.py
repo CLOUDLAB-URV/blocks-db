@@ -8,11 +8,15 @@ from pathlib import Path
 
 import boto3
 
-from .client import NoIndex, QueryMismatch, VectorDBClient, build_csv_blocks_from_local
-from .utils.waiting import FunctionsTimedOut
+from .client import PUT_UNAVAILABLE, TAGS_UNAVAILABLE, IndexExists, NoIndex, NotAvailableOnParquet, QueryMismatch, VectorDBClient, build_csv_blocks_from_local
+from .implementations.blocks.initialize import BlockTooSmall
+from .indexing.planner import PlanError
 from .infra import run_setup, refresh_lithops_credentials, get_infra_config
 from .config import DEFAULT_INFRA_CONFIG
+from .utils.parquet import ParquetSourceError
 from .utils.s3_utils import is_s3express_bucket, parse_express_az
+from .utils.vector_tracking import CounterUnavailable
+from .utils.waiting import FunctionsTimedOut
 from .utils.vector_utils import load_vectors_with_ids_from_csv, load_vectors_with_ids_and_tags_from_csv, load_vectors_from_csv
 
 
@@ -27,11 +31,26 @@ def load_backend_config():
     return {}
 
 
+# What a user can get wrong, or the cloud refuse: said as a message instead of
+# a traceback. Anything else is a defect and keeps its traceback.
+EXPECTED_ERRORS = (
+    NotAvailableOnParquet,  # a CSV-path command on a parquet index
+    IndexExists,            # a build over an index that is already there
+    NoIndex,                # a query on a dataset with nothing to search
+    QueryMismatch,          # a query the index cannot answer as it stands
+    PlanError,              # a plan the declared sources cannot support
+    ParquetSourceError,     # a source that cannot be read, named
+    BlockTooSmall,          # fewer rows left in a block than its IVF lists
+    CounterUnavailable,     # DynamoDB refused the id counter of a build
+    FileNotFoundError,      # a path given on the command line
+    FunctionsTimedOut,      # functions that never finished
+)
+
+
 def main():
     try:
         _run()
-    except (NoIndex, QueryMismatch, FunctionsTimedOut) as error:
-        # what the user can correct ends with the reason; a defect keeps its traceback
+    except EXPECTED_ERRORS as error:
         sys.exit(f"Error: {error}")
 
 
@@ -85,8 +104,11 @@ def _run():
     # ── initialize-database ───────────────────────────────────
     init_parser = subparsers.add_parser("initialize-database", help="Upload initial dataset and create index")
     init_parser.add_argument("name", help="Dataset name")
-    init_parser.add_argument("csv_path", help="Path to CSV file with vectors")
+    init_parser.add_argument("source", help="CSV file with vectors; with --format parquet, a parquet file, a directory of parquet files, or an s3:// file or prefix")
+    init_parser.add_argument("--format", choices=("csv", "parquet"), default="csv", help="Source format (default: csv). parquet builds an immutable index: no csv_blocks, no auto-indexer; features, num_index and k must be declared in the config")
     init_parser.add_argument("--config", required=True, help="Path to index config JSON")
+    init_parser.add_argument("--replace", action="store_true", help="With --format parquet: delete an existing index of the same name and build again")
+    init_parser.add_argument("--files", default="*.parquet", help="With --format parquet: the file names read from a directory or s3:// prefix (default: *.parquet). For an Open Web Index day, whose directories also hold records files: '*_embeddings.parquet'")
     init_parser.add_argument("--workers", type=int, default=16, help="Number of indexing workers")
     init_parser.add_argument("--no-update-threshold", action="store_true", help="Skip auto-update threshold after indexing")
     init_parser.add_argument("--skip-auto-indexer", action="store_true", help="Skip DynamoDB state init and vector tracking (for pure benchmarks)")
@@ -283,19 +305,35 @@ def _run():
         print(f"Configuration saved to {CONFIG_FILE}")
 
     # ── initialize-database ───────────────────────────────────
+    elif args.command == "initialize-database" and args.format == "parquet":
+        from .indexing.prepare import expand_sources
+
+        with open(args.config) as f:
+            config = json.load(f)
+
+        def list_s3(bucket_name, prefix):
+            pages = client.s3.get_paginator("list_objects_v2").paginate(Bucket=bucket_name, Prefix=prefix)
+            return [item["Key"] for page in pages for item in page.get("Contents", [])]
+
+        sources = expand_sources(args.source, list_s3, files=args.files)
+        print(f"\n=== Building index for '{args.name}' from {len(sources)} parquet file(s) ===")
+        times = client.index_parquet_dataset(args.name, sources, config, replace=args.replace)
+        print(f"Index built successfully.")
+        print(f"Timing: {json.dumps(times, indent=2)}")
+
     elif args.command == "initialize-database":
         print(f"\n=== Uploading dataset '{args.name}' ===")
 
         csv_blocks = None
         if args.build_local:
             t0 = time.time()
-            csv_blocks = build_csv_blocks_from_local(args.csv_path)
+            csv_blocks = build_csv_blocks_from_local(args.source)
             local_build_time = time.time() - t0
             blocks, last_vid = csv_blocks
             print(f"Built {len(blocks)} csv_blocks from local file (last_vid={last_vid}) in {local_build_time:.3f}s.")
 
         t0 = time.time()
-        client.create_dataset(args.name, args.csv_path)
+        client.create_dataset(args.name, args.source)
         upload_time = time.time() - t0
         print(f"Dataset uploaded in {upload_time:.3f}s.")
 
@@ -329,6 +367,7 @@ def _run():
 
     # ── put ───────────────────────────────────────────────────
     elif args.command == "put":
+        client.refuse_on_parquet(args.name, PUT_UNAVAILABLE)
         tags = json.loads(args.tags) if args.tags else None
         if tags:
             print(f"Batch tags: {tags}")
@@ -431,6 +470,7 @@ def _run():
         if not filter_tags:
             print("No filter provided.")
             return
+        client.refuse_on_parquet(args.name, TAGS_UNAVAILABLE)
 
         print(f"\n=== Getting vectors by tags for '{args.name}' ===")
         print(f"Filter: {filter_tags}")

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from vectordb import cli
 from vectordb import client as client_module
 from vectordb.client import NotAvailableOnParquet, VectorDBClient
 from vectordb.utils import dataset_ops, index_ops
@@ -103,6 +104,53 @@ class TestClient:
         client = client_for(monkeypatch, source_format)
         monkeypatch.setattr(client_module, "get_vectors_by_id", lambda *args: {"read": True})
         assert client.get_vectors("ds", [1]) == {"read": True}
+
+
+class RefusingClient:
+    """What the CLI sees for a parquet dataset."""
+
+    tracker = None  # reaching it means the refusal came too late
+
+    def __init__(self, **kwargs):
+        pass
+
+    def refuse_on_parquet(self, name, reason):
+        raise NotAvailableOnParquet(f"'{name}' was built from parquet: {reason}")
+
+    def get_vectors(self, name, ids):
+        self.refuse_on_parquet(name, "no source.csv")
+
+
+class TestCli:
+    @pytest.fixture
+    def run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "backend_config.json")
+        monkeypatch.setattr(cli, "VectorDBClient", RefusingClient)
+
+        def untouched(*args, **kwargs):
+            raise AssertionError("S3 was reached")
+
+        monkeypatch.setattr(cli.boto3, "client", untouched)
+
+        def run(*argv):
+            monkeypatch.setattr("sys.argv", ["blocks-db", "--bucket", "bucket", *argv])
+            with pytest.raises(SystemExit) as stopped:
+                cli.main()
+            return str(stopped.value.code)
+
+        return run
+
+    def test_get_by_id_ends_with_the_reason_not_a_traceback(self, run):
+        assert run("get", "ds", "1").startswith("Error: 'ds' was built from parquet")
+
+    def test_get_by_tags_stops_before_scanning_the_bucket(self, run):
+        assert run("get-by-tags", "ds", "--filter", '{"lang": "es"}').startswith("Error: 'ds' was built from parquet")
+
+    def test_put_stops_before_anything_is_written(self, run, tmp_path):
+        vectors = tmp_path / "vectors.csv"
+        vectors.write_text("7,0.0 1.0\n")
+        assert run("put", "ds", str(vectors)).startswith("Error: 'ds' was built from parquet")
 
 
 class FakeBucket:
