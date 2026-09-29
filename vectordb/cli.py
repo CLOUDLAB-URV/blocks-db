@@ -9,6 +9,7 @@ from pathlib import Path
 import boto3
 
 from .client import NoIndex, QueryMismatch, VectorDBClient, build_csv_blocks_from_local
+from .utils.waiting import FunctionsTimedOut
 from .infra import run_setup, refresh_lithops_credentials, get_infra_config
 from .config import DEFAULT_INFRA_CONFIG
 from .utils.s3_utils import is_s3express_bucket, parse_express_az
@@ -29,7 +30,7 @@ def load_backend_config():
 def main():
     try:
         _run()
-    except (NoIndex, QueryMismatch) as error:
+    except (NoIndex, QueryMismatch, FunctionsTimedOut) as error:
         # what the user can correct ends with the reason; a defect keeps its traceback
         sys.exit(f"Error: {error}")
 
