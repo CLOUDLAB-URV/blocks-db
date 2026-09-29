@@ -10,6 +10,8 @@ The initial index build via Lithops (`initialize-database`). Pipeline stages:
 | File | Description |
 |------|-------------|
 | `indexator.py` | `initialize_database()` — drives the full indexing pipeline via Lithops |
+| `planner.py` | Pure: turns parquet footers into exactly `num_index` non-empty blocks with dense positional ids |
+| `prepare.py` | Client half of a parquet build: expands the declared sources, plans, and seals the index configuration before anything is uploaded |
 
 Called from `ServerlessVectorDB.indexing()` which is called from `VectorDBClient.index_dataset()`.
 

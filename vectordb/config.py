@@ -57,6 +57,7 @@ class SvlessVectorDBParams:
     labels_key: str = "labels.json"
     
     # Runtime
+    ephemeral_storage: int = 512  # MB of /tmp inside a function; AWS allows up to 10240
     index_mem: int = 8192
     search_map_cpus: int = 6
     search_map_mem: int = 9216
@@ -78,6 +79,18 @@ class SvlessVectorDBParams:
 
     # DynamoDB connection info (injected at query time)
     dynamodb_region: str = None
+
+    # Source of the build, sealed into config.json by the parquet path:
+    # "csv" is the historical convention datasets/{name}/source.csv.
+    # Every key sealed there must exist here: a query loads config.json
+    # straight into this dataclass.
+    source_format: str = "csv"
+    source_keys: Optional[list] = None
+    source_rows: int = -1          # rows the source files declared in their footers
+    rejected: int = 0              # rows dropped while reading (malformed vectors)
+    unit_norm: bool = False        # vectors scaled to length 1 on read (owi-v2): distance = 2 - 2 cos
+    source_files_skipped: int = 0  # declared files that held no rows
+    block_ranges: Optional[list] = None  # [[block, first_id, last_id], ...] for provenance
 
     # Extra fields from index config
     total_vectors: int = -1
