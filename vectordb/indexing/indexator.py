@@ -91,3 +91,38 @@ def initialize_database(filename, params, fexec, num_workers=16, wait_timeout=No
     }
 
     return timers
+
+
+def initialize_from_plan(plan, params, fexec, wait_timeout=None):
+    """Build every block of a parquet plan: one task per block.
+
+    The plan already fixes the block count and the ids, so the number of
+    functions is the number of blocks whatever the executor's
+    concurrency; nothing is split by bytes. Returns the indexing timers of
+    the CSV path (there is no distribute phase) plus the per-block reports
+    (rows kept, rows rejected), so a build can be audited from its output
+    alone.
+    """
+    from vectordb.implementations.blocks.initialize import build_block_from_parquet
+
+    init = time.time()
+    futures = fexec.map(
+        build_block_from_parquet,
+        list(plan.blocks),
+        extra_args=[params],
+        runtime_memory=params.index_mem,
+    )
+    reports = collect(fexec, futures, wait_timeout)
+    invocation = [
+        f.stats["worker_func_start_tstamp"] - f.stats["host_job_create_tstamp"]
+        for f in futures
+    ]
+    end = time.time()
+    return {
+        f"indexing_function_{params.implementation}": [r["seconds"] for r in reports],
+        f"indexing_function_invocation_{params.implementation}": invocation,
+        f"total_indexing_{params.implementation}": end - init,
+        "blocks": sorted(reports, key=lambda r: r["block"]),
+        "rows": sum(r["rows"] for r in reports),
+        "rejected": sum(r["rejected"] for r in reports),
+    }
