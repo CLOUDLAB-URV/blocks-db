@@ -4,6 +4,7 @@ serve, and says why, instead of answering with nothing or failing in S3."""
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from vectordb import cli
 from vectordb import client as client_module
@@ -166,19 +167,23 @@ class TestCli:
 
 
 class FakeBucket:
-    """The listing and deletes delete_dataset makes, over a set of keys."""
+    """The listing and deletes delete_dataset makes, over a set of keys.
+    A listing under ``refused`` fails the way S3 reports a denied one."""
 
-    def __init__(self, keys):
+    def __init__(self, keys, refused=None):
         self.keys = set(keys)
+        self.refused = refused
 
     def delete_object(self, Bucket, Key):
         self.keys.discard(Key)
 
     def get_paginator(self, _name):
-        keys = self.keys
+        keys, refused = self.keys, self.refused
 
         class Paginator:
             def paginate(self, Bucket, Prefix):
+                if refused and Prefix.startswith(refused):
+                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "ListObjectsV2")
                 yield {"Contents": [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]}
 
         return Paginator()
@@ -202,3 +207,27 @@ def test_deleting_a_dataset_removes_the_parquet_copies_it_uploaded(monkeypatch):
         "datasets/ds-2/source/metadata_0_embeddings.parquet",
         "owi/spa/metadata_0_embeddings.parquet",
     }
+
+
+def test_copies_that_cannot_be_deleted_are_named_and_the_rest_still_goes(monkeypatch, capsys):
+    bucket = FakeBucket(
+        ["processed/ds/0.csv", "datasets/ds/source/metadata_0_embeddings.parquet"],
+        refused="datasets/ds/source/",
+    )
+    monkeypatch.setattr(dataset_ops, "s3", bucket)
+    monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: None)
+    monkeypatch.setattr(index_ops, "delete_index_configs", lambda *args: None)
+    dataset_ops.delete_dataset("bucket", "ds")
+    assert bucket.keys == {"datasets/ds/source/metadata_0_embeddings.parquet"}
+    assert "Could not delete datasets/ds/source/: An error occurred (AccessDenied)" in capsys.readouterr().out
+
+
+def test_an_interrupted_delete_stops_instead_of_going_on(monkeypatch):
+    class InterruptedBucket(FakeBucket):
+        def get_paginator(self, _name):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(dataset_ops, "s3", InterruptedBucket([]))
+    monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: pytest.fail("the indexes were deleted after the interrupt"))
+    with pytest.raises(KeyboardInterrupt):
+        dataset_ops.delete_dataset("bucket", "ds")

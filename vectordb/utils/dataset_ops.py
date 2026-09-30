@@ -1,6 +1,8 @@
 import tempfile
 import os
 
+from botocore.exceptions import ClientError
+
 from .s3_client import s3
 from .vector_utils import validate_vectors, load_vectors_from_csv
 from .index_ops import reindex_after_update
@@ -77,8 +79,9 @@ def delete_dataset(bucket, dataset_name):
                 if "Contents" in page:
                     objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
                     s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
-        except:
-            pass
+        except ClientError as error:
+            # the copies of a corpus can be large: say what stays behind
+            print(f"Could not delete {prefix}: {error}")
 
     from .index_ops import delete_indexes, delete_index_configs
     delete_indexes(bucket, dataset_name)
