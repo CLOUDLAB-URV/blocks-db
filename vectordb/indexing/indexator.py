@@ -1,7 +1,13 @@
 import time
 import logging
 import importlib
+import dataclasses
 
+import cloudpickle
+from lithops.constants import MAX_AGG_DATA_SIZE
+from lithops.utils import verify_args
+
+from vectordb.indexing.planner import PlanError
 from vectordb.utils.waiting import collect
 
 
@@ -93,6 +99,44 @@ def initialize_database(filename, params, fexec, num_workers=16, wait_timeout=No
     return timers
 
 
+def task_params(params):
+    """The parameters every build task carries.
+
+    The plan already names the file and the rows of each block, so the
+    lists of source files and id ranges sealed for config.json stay
+    behind: repeated in every task, they are most of the payload of a
+    build from hundreds of files.
+    """
+    return dataclasses.replace(params, source_keys=None, block_ranges=None)
+
+
+def check_payload(plan, params, fexec):
+    """Refuse a plan whose task arguments Lithops would refuse, before the
+    build has any side effect.
+
+    The size is measured as Lithops measures it: the arguments of every
+    task pickled on their own and summed, against ``data_limit`` in the
+    ``lithops`` section of the executor's configuration, in MiB (4 when
+    it is not set; a false value disables the check, in Lithops and here).
+    """
+    from vectordb.implementations.blocks.initialize import build_block_from_parquet
+
+    limit = fexec.config["lithops"].get("data_limit", MAX_AGG_DATA_SIZE)
+    if not limit:
+        return
+    tasks = verify_args(build_block_from_parquet, list(plan.blocks), [task_params(params)])
+    size = sum(len(cloudpickle.dumps(task)) for task in tasks)
+    if size > limit * 1024 ** 2:
+        raise PlanError(
+            f"the arguments of the {plan.num_index} build tasks weigh"
+            f" {size / 1024 ** 2:.2f} MiB ({len(plan.sources)} source files,"
+            f" {sum(len(block.ranges) for block in plan.blocks):,} row ranges),"
+            f" more than the {limit} MiB Lithops sends to the functions."
+            " Raise data_limit in the lithops section of the Lithops"
+            " configuration, or build from fewer files"
+        )
+
+
 def initialize_from_plan(plan, params, fexec, wait_timeout=None):
     """Build every block of a parquet plan: one task per block.
 
@@ -109,7 +153,7 @@ def initialize_from_plan(plan, params, fexec, wait_timeout=None):
     futures = fexec.map(
         build_block_from_parquet,
         list(plan.blocks),
-        extra_args=[params],
+        extra_args=[task_params(params)],
         runtime_memory=params.index_mem,
     )
     reports = collect(fexec, futures, wait_timeout)

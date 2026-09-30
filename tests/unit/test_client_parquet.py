@@ -58,11 +58,18 @@ class StubDB:
     """Stands in for ServerlessVectorDB, which would build a Lithops executor."""
 
     built = None
+    checked = None
+    refuse = None  # an error check_plan raises
     fail = False
     half_build = None  # an objects dict: a failing build first writes one block there
 
     def __init__(self, **params):
         StubDB.params = params
+
+    def check_plan(self, plan):
+        StubDB.checked = plan
+        if StubDB.refuse:
+            raise StubDB.refuse
 
     def indexing_from_plan(self, plan):
         if StubDB.fail:
@@ -88,7 +95,11 @@ def stub_db(monkeypatch):
     from vectordb import client as client_module
 
     StubDB.built = None
+    StubDB.checked = None
+    StubDB.refuse = None
     StubDB.fail = False
+    StubDB.half_build = None
+    StubDB.params = None
     monkeypatch.setattr(client_module, "ServerlessVectorDB", StubDB)
     return StubDB
 
@@ -207,6 +218,31 @@ class TestIndexParquetDataset:
         assert stub_db.built is not None and "indexes/ds/blocks/config.json" in client.s3.objects
         # what was removed was the index being replaced, not a failed build
         assert "Removed 2 objects of the previous index under indexes/ds/blocks/" in capsys.readouterr().out
+
+    def test_the_plan_is_checked_with_the_uris_the_functions_will_read(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        uris = {part.uri for block in stub_db.checked.blocks for part in block.ranges}
+        assert uris == {
+            "s3://bucket/datasets/ds/source/language=eng/metadata_0_embeddings.parquet",
+            "s3://bucket/datasets/ds/source/language=spa/metadata_0_embeddings.parquet",
+        }
+        assert stub_db.params["dataset"] == "ds" and stub_db.params["storage_bucket"] == "bucket"
+
+    def test_a_plan_too_large_for_the_functions_stops_before_any_side_effect(self, partitioned_corpus, stub_db):
+        # Lithops refuses the map only when it is called, after the old
+        # index is gone, the counter is seeded and the files are uploaded
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        stub_db.refuse = PlanError("the arguments of the 2 build tasks weigh 5.22 MiB")
+        with pytest.raises(PlanError, match="5.22 MiB"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.deleted == [] and client.s3.uploads == {}
+        assert client.tracker.seeded is None and stub_db.built is None
 
     def test_a_counter_that_cannot_be_seeded_leaves_the_previous_index_intact(self, partitioned_corpus, stub_db):
         # the seed is the first write of a build; with replace it must also

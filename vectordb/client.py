@@ -373,10 +373,11 @@ class VectorDBClient:
         """Build an immutable index from parquet sources.
 
         Local files are uploaded under ``datasets/{name}/source/``; ``s3://``
-        URIs are read in place. The plan is validated before any function
-        runs, and the configuration saved is the sealed one: what was
-        read, how many vectors, which dimension, how many blocks. This
-        path never calls ``_get_vector_count``, ``csv_blocks`` or the
+        URIs are read in place. The plan is validated before anything is
+        deleted, uploaded or invoked, down to the size of the arguments the
+        functions receive, and the configuration saved is the sealed one:
+        what was read, how many vectors, which dimension, how many blocks.
+        This path never calls ``_get_vector_count``, ``csv_blocks`` or the
         auto-indexer set-up. Its only DynamoDB write sets the id counter to
         the number of source rows, so ids handed out from the counter start
         above the ids of the index; it happens before anything is deleted,
@@ -403,6 +404,30 @@ class VectorDBClient:
                 f"'{dataset_name}' already holds an index ({existing} objects under {prefix});"
                 " pass replace=True (--replace) to delete it and build again"
             )
+
+        # the key of a local file keeps the path below the common root, so
+        # the metadata_0_embeddings.parquet of two language partitions do
+        # not collide on one key and silently index one twice. The keys
+        # are known before the upload, so the plan is checked with the
+        # URIs the functions will read
+        root = os.path.commonpath([os.path.abspath(s) for s in local]) if local else ""
+        if local and os.path.isfile(root):
+            root = os.path.dirname(root)
+        keys = {}
+        for source in local:
+            relative = os.path.relpath(os.path.abspath(source), root) if root else os.path.basename(source)
+            keys[source] = f"datasets/{dataset_name}/source/{relative}"
+        uploaded = {os.path.abspath(source): f"s3://{self.bucket}/{key}" for source, key in keys.items()}
+        sealed["source_keys"] = [
+            uploaded.get(os.path.abspath(uri), uri) for uri in sealed["source_keys"]
+        ]
+        build_plan = build_plan.with_sources(uploaded) if uploaded else build_plan
+
+        sealed["dataset"] = dataset_name
+        sealed["storage_bucket"] = self.bucket
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **sealed)
+        sv_vectordb.check_plan(build_plan)
+
         if save_config:
             # the one DynamoDB write of this path goes first: a missing table
             # or permission must cost no upload, no function and no index
@@ -412,31 +437,12 @@ class VectorDBClient:
             self.tracker.initialize_next_id(dataset_name, build_plan.total_vectors, strict=True)
         if existing:
             self._delete_blocks(dataset_name, sealed["implementation"], "the previous index")
-
-        root = os.path.commonpath([os.path.abspath(s) for s in local]) if local else ""
-        if local and os.path.isfile(root):
-            root = os.path.dirname(root)
-        uploaded = {}
-        for source in local:
-            # the key keeps the path below the common root, so the
-            # metadata_0_embeddings.parquet of two language partitions do
-            # not collide on one key and silently index one twice
-            relative = os.path.relpath(os.path.abspath(source), root) if root else os.path.basename(source)
-            key = f"datasets/{dataset_name}/source/{relative}"
+        for source, key in keys.items():
             self.s3.upload_file(source, self.bucket, key)
-            uploaded[os.path.abspath(source)] = f"s3://{self.bucket}/{key}"
-        sealed["source_keys"] = [
-            uploaded.get(os.path.abspath(uri), uri) for uri in sealed["source_keys"]
-        ]
-        build_plan = build_plan.with_sources(uploaded) if uploaded else build_plan
-
-        sealed["dataset"] = dataset_name
-        sealed["storage_bucket"] = self.bucket
 
         print(f"Plan: {build_plan.total_vectors:,} rows in {build_plan.num_index} blocks"
               f" (smallest {build_plan.min_block_rows:,}, largest {build_plan.max_block_rows:,},"
               f" imbalance {build_plan.imbalance:.2f}x), dimension {build_plan.dimension}")
-        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **sealed)
         print("Starting indexing...")
         try:
             times = sv_vectordb.indexing_from_plan(build_plan)

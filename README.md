@@ -449,7 +449,11 @@ The index configuration must declare `features` (the vector dimension),
 suggests a `k` for the smallest block: 4·√rows, with the largest value FAISS
 trains beside it. The blocks are planned from the file footers, so their
 number is exactly `num_index` whatever the worker count, and every vector
-gets a dense positional id.
+gets a dense positional id. Each function receives the row ranges of its
+block; when the ranges of all the blocks weigh more than Lithops sends to
+the functions (`data_limit` in the `lithops` section of its configuration,
+4 MiB by default), the build refuses to start before it deletes or uploads
+anything. Raise `data_limit`, or build from fewer files.
 
 What a parquet build does **not** do, by design: no CSV byte-offset blocks,
 no auto-indexer state, no tags. The index is immutable; rebuild it to change

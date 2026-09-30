@@ -2,7 +2,7 @@ from lithops import FunctionExecutor
 
 from vectordb.config import SvlessVectorDBParams
 
-from .indexing.indexator import initialize_database, initialize_from_plan
+from .indexing.indexator import check_payload, initialize_database, initialize_from_plan
 from .orchestration.orchestrator import Orchestrator
 
 class ServerlessVectorDB():
@@ -17,6 +17,10 @@ class ServerlessVectorDB():
         if not self.params.skip_init:
             return initialize_database(filename, self.params, self.indexing_executor, num_workers, self.wait_timeout)
         return {}
+
+    def check_plan(self, plan):
+        """Refuse a plan whose tasks the executor would refuse to send."""
+        check_payload(plan, self.params, self.indexing_executor)
 
     def indexing_from_plan(self, plan):
         """Build the blocks of a parquet plan, one task each."""

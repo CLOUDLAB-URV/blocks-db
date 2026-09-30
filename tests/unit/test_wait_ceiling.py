@@ -185,9 +185,11 @@ class TestTheCallers:
             return [{"block": block, "seconds": 1.0, "rows": 10, "rejected": 0} for block in range(len(futures))]
 
         monkeypatch.setattr(indexator, "collect", collect)
+        from vectordb.config import SvlessVectorDBParams
+
         executor = SimpleNamespace(map=lambda *args, **kwargs: [SimpleNamespace(stats=self.STATS) for _ in range(8)])
         plan = SimpleNamespace(blocks=list(range(8)))
-        params = SimpleNamespace(implementation="blocks", index_mem=1024)
+        params = SvlessVectorDBParams(implementation="blocks", index_mem=1024)
         assert indexator.initialize_from_plan(plan, params, executor, 300)["rows"] == 80
         assert waited == [300]
 

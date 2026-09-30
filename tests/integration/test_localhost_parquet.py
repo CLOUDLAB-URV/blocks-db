@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from helpers import write_owi
+from vectordb.indexing.planner import PlanError
 from vectordb.indexing.prepare import expand_sources, prepare_build
 from vectordb.utils.idmap import idmap_prefix, select
 
@@ -48,6 +49,12 @@ def test_build_and_query_a_parquet_source(tmp_path, lithops_localhost):
     assert sealed["source_format"] == "parquet" and sealed["total_vectors"] == 40
 
     db = ServerlessVectorDB(**sealed)
+    # the payload check reads the limit of the executor that runs the build
+    db.indexing_executor.config["lithops"]["data_limit"] = 0.0005
+    with pytest.raises(PlanError, match="Raise data_limit"):
+        db.check_plan(build_plan)
+    del db.indexing_executor.config["lithops"]["data_limit"]
+    db.check_plan(build_plan)
     times = db.indexing_from_plan(build_plan)
     assert times["rows"] == 40 and times["rejected"] == 0
     assert [r["block"] for r in times["blocks"]] == [0, 1]
