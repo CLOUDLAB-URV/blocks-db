@@ -2,6 +2,7 @@ import json
 import os
 import time
 import boto3
+from botocore.exceptions import ClientError
 import numpy as np
 import csv
 from typing import List, Tuple, Optional
@@ -504,17 +505,19 @@ class VectorDBClient:
         from the ``idmap`` parts the build wrote next to the blocks.
 
         Only the parts whose id range covers a wanted id are fetched, from
-        the ranges the build sealed into ``config.json``; without them
-        every part is read.
+        the ranges the build sealed into ``config.json``; a config without
+        them (a CSV build) means every part is read. A dataset with no
+        ``config.json`` raises :class:`NoIndex`.
         """
         prefix = idmap_prefix(dataset_name, implementation)
         wanted = sorted({int(value) for value in ids})
-        blocks = None
         try:
             config = load_index_config(self.bucket, dataset_name, implementation, None)
-            blocks = config.get("block_ranges")
-        except Exception:
-            blocks = None
+        except ClientError as error:
+            if error.response["Error"]["Code"] != "NoSuchKey":
+                raise
+            raise NoIndex(f"No index found for dataset '{dataset_name}'. Run indexing first.") from None
+        blocks = config.get("block_ranges")
         if blocks:
             needed = {
                 block for block, first, last in blocks

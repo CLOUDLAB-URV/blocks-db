@@ -1,9 +1,11 @@
 """The client's parquet build: what it uploads, seals and cleans up."""
 
 import pytest
+from botocore.exceptions import ClientError
 
 from helpers import write_owi
-from vectordb.client import IndexExists, VectorDBClient
+from vectordb import client as client_module
+from vectordb.client import IndexExists, NoIndex, VectorDBClient
 from vectordb.indexing.planner import PlanError
 from vectordb.utils.parquet import ParquetSourceError
 
@@ -93,8 +95,6 @@ def partitioned_corpus(tmp_path):
 
 @pytest.fixture
 def stub_db(monkeypatch):
-    from vectordb import client as client_module
-
     StubDB.built = None
     StubDB.checked = None
     StubDB.refuse = None
@@ -281,14 +281,24 @@ class TestIndexParquetDataset:
         assert "indexes/ds/blocks/config.json" not in client.s3.objects
 
 
+def s3_error(code):
+    """A config read that fails the way boto3 reports it."""
+    error = ClientError({"Error": {"Code": code, "Message": code}}, "GetObject")
+
+    def load(bucket, dataset, implementation, num_index):
+        raise error
+
+    return load
+
+
 class TestProvenance:
-    def test_only_the_parts_covering_the_ids_are_fetched(self, monkeypatch):
+    @pytest.fixture
+    def idmap_bucket(self):
+        """A client over two idmap parts, and the list of parts it fetches."""
         import io
 
         import pyarrow as pa
         import pyarrow.parquet as pq
-
-        from vectordb import client as client_module
 
         def part(ids):
             sink = io.BytesIO()
@@ -305,7 +315,6 @@ class TestProvenance:
         fake = FakeS3()
         fake.objects["indexes/ds/blocks/idmap/block_0.parquet"] = part([0, 1])
         fake.objects["indexes/ds/blocks/idmap/block_1.parquet"] = part([2, 3])
-        client = client_with(fake)
         fetched = []
 
         def get_object(Bucket, Key):
@@ -313,6 +322,10 @@ class TestProvenance:
             return {"Body": io.BytesIO(fake.objects[Key])}
 
         fake.get_object = get_object
+        return client_with(fake), fetched
+
+    def test_only_the_parts_covering_the_ids_are_fetched(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
         monkeypatch.setattr(
             client_module, "load_index_config",
             lambda bucket, dataset, implementation, num_index: {"block_ranges": [[0, 0, 1], [1, 2, 3]]},
@@ -320,3 +333,27 @@ class TestProvenance:
 
         assert client.provenance("ds", [3]) == {3: ("doc-3", 0)}
         assert fetched == ["indexes/ds/blocks/idmap/block_1.parquet"]
+
+    def test_a_config_without_block_ranges_reads_every_part(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", lambda *args: {"num_index": 2})
+
+        assert client.provenance("ds", [3]) == {3: ("doc-3", 0)}
+        assert fetched == ["indexes/ds/blocks/idmap/block_0.parquet", "indexes/ds/blocks/idmap/block_1.parquet"]
+
+    def test_a_dataset_without_an_index_is_refused_by_name(self, idmap_bucket, monkeypatch):
+        # a misspelled name must not turn into a read of every part and an empty answer
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", s3_error("NoSuchKey"))
+
+        with pytest.raises(NoIndex, match="No index found for dataset 'typo'"):
+            client.provenance("typo", [3])
+        assert fetched == []
+
+    def test_a_config_read_that_fails_is_not_hidden_behind_a_full_read(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", s3_error("SlowDown"))
+
+        with pytest.raises(ClientError, match="SlowDown"):
+            client.provenance("ds", [3])
+        assert fetched == []
