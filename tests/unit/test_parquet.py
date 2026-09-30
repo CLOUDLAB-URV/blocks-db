@@ -5,7 +5,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from helpers import write_canonical, write_owi
+from helpers import read_rows, write_canonical, write_owi
 from vectordb.utils.parquet import (
     CANONICAL,
     OWI_V2,
@@ -14,7 +14,6 @@ from vectordb.utils.parquet import (
     detect_dialect,
     inspect,
     iter_ranges,
-    read_rows,
 )
 
 
@@ -25,7 +24,6 @@ class TestInspect:
         assert info.dialect == OWI_V2
         assert info.dimension == 4
         assert info.row_groups == (4, 4, 2)
-        assert info.num_rows == 10
 
     def test_canonical_file_footer(self, tmp_path):
         path = tmp_path / "vectors.parquet"

@@ -1,8 +1,16 @@
-"""Synthetic parquet sources for the tests."""
+"""Synthetic parquet sources for the tests, and a one-range reader."""
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from vectordb.utils.parquet import Rows, iter_ranges
+
+
+def read_rows(uri, row_group, dimension, start=0, end=None) -> Rows:
+    """Decode rows ``[start, end)`` of one row group."""
+    (rows,) = list(iter_ranges(uri, dimension, [(row_group, start, end)]))
+    return rows
 
 
 def write_owi(path, rows, dimension=4, row_group_size=None, seed=0, bad_rows=()):

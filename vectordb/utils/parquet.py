@@ -71,10 +71,6 @@ class FileInfo:
     dimension: int
     row_groups: tuple[int, ...]  # rows per row group, in file order
 
-    @property
-    def num_rows(self) -> int:
-        return sum(self.row_groups)
-
 
 @dataclass(frozen=True)
 class Rows:
@@ -191,9 +187,8 @@ def inspect(uri: str) -> FileInfo:
 
 
 def _first_vector_length(uri: str, reader: pq.ParquetFile, column: str, row_groups) -> int:
-    first = next((index for index, rows in enumerate(row_groups) if rows), None)
-    if first is None:
-        raise EmptyParquetFile(f"{uri}: no rows")
+    # inspect() refuses a file with no rows before it asks for the dimension
+    first = next(index for index, rows in enumerate(row_groups) if rows)
     values = reader.read_row_group(first, columns=[column]).column(column)
     for item in values:
         if item.is_valid:
@@ -202,18 +197,6 @@ def _first_vector_length(uri: str, reader: pq.ParquetFile, column: str, row_grou
         f"{uri}: no vector in the first row group with rows; the dimension"
         " cannot be read from the schema either"
     )
-
-
-def read_rows(
-    uri: str,
-    row_group: int,
-    dimension: int,
-    start: int = 0,
-    end: int | None = None,
-) -> Rows:
-    """Decode rows ``[start, end)`` of one row group into float32."""
-    (rows,) = list(iter_ranges(uri, dimension, [(row_group, start, end)]))
-    return rows
 
 
 def iter_ranges(uri: str, dimension: int, ranges):
