@@ -41,6 +41,15 @@ class TestClient:
         with pytest.raises(NotAvailableOnParquet, match="'ds' was built from parquet"):
             call(client)
 
+    @pytest.mark.parametrize("refuse, reason", [
+        (lambda c: c.refuse_put_on_parquet("ds"), "immutable"),
+        (lambda c: c.refuse_tags_on_parquet("ds"), "tags"),
+    ], ids=["put", "tags"])
+    def test_the_refusals_the_command_line_asks_for_say_the_same_as_the_client_calls(self, monkeypatch, refuse, reason):
+        with pytest.raises(NotAvailableOnParquet, match=f"'ds' was built from parquet: .*{reason}"):
+            refuse(client_for(monkeypatch, "parquet"))
+        refuse(client_for(monkeypatch, "csv"))  # nothing to refuse
+
     def test_reindexing_is_refused_before_anything_is_deleted(self, monkeypatch):
         # it would delete every block and the id map, then fail on source.csv
         client = client_for(monkeypatch, "parquet")
@@ -114,11 +123,14 @@ class RefusingClient:
     def __init__(self, **kwargs):
         pass
 
-    def refuse_on_parquet(self, name, reason):
-        raise NotAvailableOnParquet(f"'{name}' was built from parquet: {reason}")
+    def refuse_put_on_parquet(self, name):
+        raise NotAvailableOnParquet(f"'{name}' was built from parquet: immutable")
+
+    def refuse_tags_on_parquet(self, name):
+        raise NotAvailableOnParquet(f"'{name}' was built from parquet: no tags")
 
     def get_vectors(self, name, ids):
-        self.refuse_on_parquet(name, "no source.csv")
+        raise NotAvailableOnParquet(f"'{name}' was built from parquet: no source.csv")
 
 
 class TestCli:

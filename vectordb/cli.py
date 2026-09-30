@@ -8,7 +8,7 @@ from pathlib import Path
 
 import boto3
 
-from .client import PUT_UNAVAILABLE, TAGS_UNAVAILABLE, IndexExists, NoIndex, NotAvailableOnParquet, QueryMismatch, VectorDBClient, build_csv_blocks_from_local
+from .client import IndexExists, NoIndex, NotAvailableOnParquet, QueryMismatch, VectorDBClient, build_csv_blocks_from_local
 from .implementations.blocks.initialize import BlockTooSmall
 from .indexing.planner import PlanError
 from .infra import run_setup, refresh_lithops_credentials, get_infra_config
@@ -392,7 +392,7 @@ def _run():
 
     # ── put ───────────────────────────────────────────────────
     elif args.command == "put":
-        client.refuse_on_parquet(args.name, PUT_UNAVAILABLE)
+        client.refuse_put_on_parquet(args.name)
         tags = json.loads(args.tags) if args.tags else None
         if tags:
             print(f"Batch tags: {tags}")
@@ -493,7 +493,7 @@ def _run():
         if not filter_tags:
             print("No filter provided.")
             return
-        client.refuse_on_parquet(args.name, TAGS_UNAVAILABLE)
+        client.refuse_tags_on_parquet(args.name)
 
         print(f"\n=== Getting vectors by tags for '{args.name}' ===")
         print(f"Filter: {filter_tags}")

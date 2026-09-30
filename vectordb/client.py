@@ -69,20 +69,20 @@ def check_queries(vectors, features):
         )
 
 
-TAGS_UNAVAILABLE = "a parquet build indexes no tags, so tag filters and get-by-tags are not available"
-VECTORS_UNAVAILABLE = (
+_TAGS_UNAVAILABLE = "a parquet build indexes no tags, so tag filters and get-by-tags are not available"
+_VECTORS_UNAVAILABLE = (
     "its vectors cannot be read back, since it keeps no source.csv;"
     " provenance() maps ids to their source records"
 )
-PUT_UNAVAILABLE = (
+_PUT_UNAVAILABLE = (
     "it is immutable: added vectors would reuse its positional ids and have no"
     " provenance; build it again with the new sources included"
 )
-REINDEX_UNAVAILABLE = (
+_REINDEX_UNAVAILABLE = (
     "reindexing deletes the blocks and rebuilds them from a source.csv it does not have;"
     " build it again with initialize-database --format parquet"
 )
-CSV_BUILD_UNAVAILABLE = (
+_CSV_BUILD_UNAVAILABLE = (
     "a CSV build writes its blocks over the ones already there and orphans the id map;"
     " delete the dataset first, or build under another name"
 )
@@ -162,7 +162,7 @@ class VectorDBClient:
         Renames automatically to vectors_{name}.csv
         """
 
-        self.refuse_on_parquet(name, CSV_BUILD_UNAVAILABLE)
+        self._refuse_on_parquet(name, _CSV_BUILD_UNAVAILABLE)
 
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"{csv_path} not found.")
@@ -191,7 +191,7 @@ class VectorDBClient:
         Returns:
             Number of vectors added
         """
-        self.refuse_on_parquet(dataset_name, PUT_UNAVAILABLE)
+        self.refuse_put_on_parquet(dataset_name)
         key = self.tracker.put_vectors(dataset_name, vectors, tags=tags, per_vector_tags=per_vector_tags)
         print(f"Added {len(vectors)} vectors to pending storage for dataset '{dataset_name}' -> {key}")
         return len(vectors)
@@ -269,26 +269,34 @@ class VectorDBClient:
                 return config
         return None
 
-    def refuse_on_parquet(self, dataset_name: str, reason: str):
+    def _refuse_on_parquet(self, dataset_name: str, reason: str):
         """Stop a CSV-path feature on an index built from parquet, before it
         reads a source.csv that does not exist or deletes blocks it cannot
         rebuild."""
         if self.parquet_config(dataset_name) is not None:
             raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {reason}")
 
+    def refuse_put_on_parquet(self, dataset_name: str):
+        """Stop vectors from being added to an index built from parquet."""
+        self._refuse_on_parquet(dataset_name, _PUT_UNAVAILABLE)
+
+    def refuse_tags_on_parquet(self, dataset_name: str):
+        """Stop a tag filter or a get-by-tags on an index built from parquet."""
+        self._refuse_on_parquet(dataset_name, _TAGS_UNAVAILABLE)
+
     def get_vectors(self, dataset_name: str, ids):
         """Get vectors by their IDs from the dataset."""
-        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _VECTORS_UNAVAILABLE)
         return get_vectors_by_id(self.bucket, dataset_name, ids)
 
     def list_vectors(self, dataset_name: str, limit: int = 100):
         """List first N vectors from the dataset."""
-        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _VECTORS_UNAVAILABLE)
         return list_vectors(self.bucket, dataset_name, limit)
 
     def list_vectors_paginated(self, dataset_name: str, start=0, limit=100):
         """List vectors with pagination (start offset, limit)."""
-        self.refuse_on_parquet(dataset_name, VECTORS_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _VECTORS_UNAVAILABLE)
         return list_vectors_paginated(
             self.bucket,
             dataset_name,
@@ -318,7 +326,7 @@ class VectorDBClient:
             dict: Timing stats from the indexing process.
         """
 
-        self.refuse_on_parquet(dataset_name, CSV_BUILD_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _CSV_BUILD_UNAVAILABLE)
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
@@ -600,7 +608,7 @@ class VectorDBClient:
         Returns:
             Timing stats from the indexing process
         """
-        self.refuse_on_parquet(dataset_name, REINDEX_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _REINDEX_UNAVAILABLE)
         if not self.has_pending_vectors(dataset_name):
             print("No pending vectors to reindex.")
             return {}
@@ -757,7 +765,7 @@ class VectorDBClient:
 
     def get_vector_ids_by_tags(self, dataset_name: str, filter_tags: dict, limit: int = 100) -> List[int]:
         """Get vector IDs matching ALL filter tags by scanning centroid _tags.json files."""
-        self.refuse_on_parquet(dataset_name, TAGS_UNAVAILABLE)
+        self.refuse_tags_on_parquet(dataset_name)
         import json as _json
         s3 = boto3.client("s3")
         prefix = f"indexes/{dataset_name}/blocks/"
@@ -1067,7 +1075,7 @@ class VectorDBClient:
             num_index
         )
         if filter_tags and config.get("source_format") == "parquet":
-            raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {TAGS_UNAVAILABLE}")
+            raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {_TAGS_UNAVAILABLE}")
 
         # a parquet build seals the source list and the block ranges into
         # config.json, where provenance() reads the ranges; no function
