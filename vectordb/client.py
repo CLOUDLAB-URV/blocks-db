@@ -374,10 +374,11 @@ class VectorDBClient:
 
         Local files are uploaded under ``datasets/{name}/source/``; ``s3://``
         URIs are read in place. The plan is validated before anything is
-        deleted, uploaded or invoked, down to the size of the arguments the
-        functions receive, and the configuration saved is the sealed one:
-        what was read, how many vectors, which dimension, how many blocks.
-        This path never calls ``_get_vector_count``, ``csv_blocks`` or the
+        deleted, seeded, uploaded or invoked, down to the disk of a function
+        and the size of the arguments the functions receive, and the
+        configuration saved is the sealed one: what was read, how many
+        vectors, which dimension, how many blocks. This path never calls
+        ``_get_vector_count``, ``csv_blocks`` or the
         auto-indexer set-up. Its only DynamoDB write sets the id counter to
         the number of source rows, so ids handed out from the counter start
         above the ids of the index; it happens before anything is deleted,

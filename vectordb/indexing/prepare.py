@@ -134,7 +134,6 @@ def prepare_build(sources: Sequence[str], config: dict) -> tuple[Plan, dict]:
         source_files_skipped=empty,
         unit_norm=result.dialect == OWI_V2,
     )
-    _check_ephemeral_storage(result, sealed)
     # building the parameters here turns an unknown or misspelled key into
     # a failure now rather than a TypeError after the build, and a missing
     # one into a default the sealed config records
@@ -142,16 +141,21 @@ def prepare_build(sources: Sequence[str], config: dict) -> tuple[Plan, dict]:
     return result, sealed
 
 
-def _check_ephemeral_storage(result: Plan, sealed: dict) -> None:
-    """The largest block must fit on the function's ephemeral disk."""
-    limit_mb = sealed.get("ephemeral_storage", 512)
+def check_ephemeral_storage(result: Plan, limit_mb: int) -> None:
+    """The largest block must fit on the disk of a function.
+
+    ``limit_mb`` is the size Lithops gives that disk when it deploys the
+    runtime, ``aws_lambda.ephemeral_storage`` in its configuration, so
+    the caller reads it from the executor that runs the build.
+    """
     needed = result.max_block_rows * result.dimension * _BYTES_PER_VALUE
     needed_mb = needed * _EPHEMERAL_HEADROOM / (1024 * 1024)
     if needed_mb > limit_mb:
         raise PlanError(
             f"the largest block holds {result.max_block_rows} vectors of"
             f" {result.dimension} values, about {needed / (1024 * 1024):.0f} MB"
-            f" written to the function's disk, which does not fit in"
-            f" ephemeral_storage = {limit_mb} MB. Raise ephemeral_storage"
-            f" (up to 10240) or use more blocks"
+            f" written to the function's disk, which does not fit in its"
+            f" ephemeral storage of {limit_mb} MB. Raise aws_lambda.ephemeral_storage"
+            " in the Lithops configuration (up to 10240) and deploy the runtime"
+            " again, or use more blocks"
         )

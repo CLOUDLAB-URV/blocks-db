@@ -57,7 +57,6 @@ class SvlessVectorDBParams:
     labels_key: str = "labels.json"
     
     # Runtime
-    ephemeral_storage: int = 512  # MB of /tmp inside a function; AWS allows up to 10240
     index_mem: int = 8192
     search_map_cpus: int = 6
     search_map_mem: int = 9216

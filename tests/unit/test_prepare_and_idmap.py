@@ -8,7 +8,7 @@ import pytest
 
 from helpers import write_canonical, write_owi
 from vectordb.indexing.planner import PlanError
-from vectordb.indexing.prepare import prepare_build
+from vectordb.indexing.prepare import check_ephemeral_storage, prepare_build
 from vectordb.utils.idmap import idmap_prefix, select
 
 
@@ -81,11 +81,18 @@ class TestPrepareBuild:
     def test_a_block_that_would_not_fit_the_function_disk_is_refused(self, tmp_path):
         source = tmp_path / "x.parquet"
         write_owi(source, rows=40, dimension=8)
+        result, _ = prepare_build([str(source)], {"num_index": 1, "k": 1, "features": 8})
         # 40 rows x 8 values is tiny, so make the limit tiny as well
-        with pytest.raises(PlanError, match="ephemeral_storage = 0 MB"):
-            prepare_build([str(source)], {"num_index": 1, "k": 1, "features": 8, "ephemeral_storage": 0})
-        plan, sealed = prepare_build([str(source)], {"num_index": 1, "k": 1, "features": 8, "ephemeral_storage": 512})
-        assert sealed["ephemeral_storage"] == 512
+        with pytest.raises(PlanError, match="ephemeral storage of 0 MB"):
+            check_ephemeral_storage(result, 0)
+        check_ephemeral_storage(result, 512)
+
+    def test_the_disk_size_is_not_an_index_setting(self, tmp_path):
+        # it comes from the Lithops configuration of the executor
+        source = tmp_path / "x.parquet"
+        write_owi(source, rows=8)
+        with pytest.raises(TypeError, match="ephemeral_storage"):
+            prepare_build([str(source)], {"num_index": 1, "k": 1, "features": 4, "ephemeral_storage": 512})
 
 
 def idmap_bytes(ids, record_ids, chunk_idx) -> bytes:

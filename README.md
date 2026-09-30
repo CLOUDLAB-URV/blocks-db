@@ -455,6 +455,15 @@ the functions (`data_limit` in the `lithops` section of its configuration,
 4 MiB by default), the build refuses to start before it deletes or uploads
 anything. Raise `data_limit`, or build from fewer files.
 
+Each function writes its block to its own disk before uploading it, so the
+largest block must fit there. On AWS Lambda that disk is the
+`ephemeral_storage` of the `aws_lambda` section of the Lithops configuration
+(512 MB unless set, up to 10240), applied when the runtime is deployed; a
+plan whose largest block does not fit is refused before anything is
+uploaded or deleted. A function already deployed keeps its size: after
+raising the setting, delete the runtime and deploy it again, or use more
+blocks.
+
 What a parquet build does **not** do, by design: no CSV byte-offset blocks,
 no auto-indexer state, no tags. The index is immutable; rebuild it to change
 it. A build refuses a name that already holds an index; `--replace` deletes
