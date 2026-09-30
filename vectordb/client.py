@@ -1056,6 +1056,14 @@ class VectorDBClient:
         if filter_tags and config.get("source_format") == "parquet":
             raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {TAGS_UNAVAILABLE}")
 
+        # a parquet build seals the source list and the block ranges into
+        # config.json, where provenance() reads the ranges; no function
+        # reads either list, and carried by every map and reduce task, a
+        # few dozen files push each task over what Lithops sends inline,
+        # so every function downloads its arguments from storage
+        config.pop("source_keys", None)
+        config.pop("block_ranges", None)
+
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
         config["dynamodb_table_name"] = self.tracker.table_name

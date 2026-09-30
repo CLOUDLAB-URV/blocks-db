@@ -84,6 +84,33 @@ class TestADatasetWithNothingToSearch:
         assert times["fallback"].startswith("no index")
 
 
+class TestWhatAQueryHandsToTheFunctions:
+    def test_the_source_list_and_block_ranges_of_a_parquet_index_stay_in_config_json(self, monkeypatch):
+        # every map and reduce task carries the parameters; with a few
+        # dozen source files the two lists push a task over what Lithops
+        # sends inline, and provenance() reads them from config.json anyway
+        client = client_with(monkeypatch, indexes=[("blocks", 4)])
+        sealed = {
+            "num_index": 4, "features": 2, "k": 1, "source_format": "parquet",
+            "source_keys": [f"s3://bucket/datasets/ds/source/metadata_{i}_embeddings.parquet" for i in range(63)],
+            "block_ranges": [[0, 0, 9], [1, 10, 19], [2, 20, 29], [3, 30, 39]],
+        }
+        handed = {}
+
+        def open_index(**config):
+            handed.update(config)
+            return SimpleNamespace(params=SimpleNamespace(features=2), search=lambda *a, **k: ([[(3, 0.0, "indexed")]], {}))
+
+        monkeypatch.setattr(client_module, "load_index_config", lambda *args: dict(sealed))
+        monkeypatch.setattr(client_module, "ServerlessVectorDB", open_index)
+
+        results, _ = client.query_batch("ds", [[0.0, 1.0]], k=1)
+
+        assert results == [[(3, 0.0, "indexed")]]
+        assert "source_keys" not in handed and "block_ranges" not in handed
+        assert handed["source_format"] == "parquet" and handed["k"] == 1 and handed["dataset"] == "ds"
+
+
 class TestASearchThatFailsIsNotAnEmptyAnswer:
     def test_the_error_of_the_search_reaches_the_caller(self, monkeypatch):
         # a failure inside the functions is not "no index available":
