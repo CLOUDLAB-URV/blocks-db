@@ -77,6 +77,22 @@ def test_canonical_block_keeps_the_file_ids_as_provenance_text(tmp_path):
     assert idmap["chunk_idx"] == [0] * 6
 
 
+def test_a_canonical_block_without_ids_keeps_the_index_id_as_provenance(tmp_path):
+    source = tmp_path / "vectors.parquet"
+    write_canonical(source, rows=6, dimension=4, row_group_size=3, with_ids=False)
+    result = plan([inspect(str(source))], num_index=2, k=1)
+    storage = FakeStorage(tmp_path / "store")
+
+    reports = [build_block_from_parquet(block, Params(), storage) for block in result.blocks]
+
+    assert [r["rows"] for r in reports] == [3, 3]
+    for block in result.blocks:
+        idmap = pq.read_table(tmp_path / "store/bucket/indexes/ds/blocks/idmap" / f"block_{block.block}.parquet").to_pydict()
+        assert idmap["id"] == list(range(block.first_id, block.last_id + 1))
+        assert idmap["record_id"] == [str(i) for i in idmap["id"]]
+        assert idmap["chunk_idx"] == [0] * 3
+
+
 def test_a_block_left_below_k_by_rejections_is_refused_by_name(tmp_path):
     # the planner can only bound k from the footers; rejected rows are
     # only known here, so the worker is the last line of defence

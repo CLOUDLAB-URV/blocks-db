@@ -408,6 +408,10 @@ class VectorDBClient:
         the new one is built: built beside it, a smaller build would leave
         old blocks and id map parts to be served with the new ones.
 
+        The id of a vector is the position of its row in the plan, in
+        every dialect; the id the file gives it (``id`` or ``record_id``)
+        is kept as ``record_id`` and comes back from :meth:`provenance`.
+
         Returns the indexing timers plus ``rows``, ``rejected`` and the
         per-block reports.
         """

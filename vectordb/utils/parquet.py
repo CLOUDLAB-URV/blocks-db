@@ -2,8 +2,9 @@
 
 Two dialects are recognized by their column names:
 
-- ``canonical``: ``id`` (integer) and ``vector`` (list of float), the
-  parquet twin of the CSV rows. Any other column is ignored.
+- ``canonical``: ``vector`` (list of float) and, optionally, ``id``
+  (integer), the parquet twin of the CSV rows. Any other column is
+  ignored.
 - ``owi-v2``: ``record_id`` (string), ``chunk_idx`` (integer) and
   ``embedding`` (list of float16) — the Open Web Index embeddings files
   as published, consumed without conversion.
@@ -18,6 +19,10 @@ declared dimension are counted as rejected, never padded or truncated,
 and the positions of the kept rows are returned so position-based ids
 stay stable. ``owi-v2`` vectors come back at unit length, and a row
 that cannot be scaled (zero or non-finite) is rejected too.
+
+In both dialects the id of a vector in the index is the position of its
+row in the plan; the file's own id (``id`` or ``record_id``) is kept as
+provenance and returned by ``VectorDBClient.provenance()``.
 
 Sources are named by URI: ``s3://bucket/key`` or a local path. The S3
 filesystem is built once per process from ``AWS_REGION`` when it is set,
@@ -41,7 +46,7 @@ OWI_V2 = "owi-v2"
 
 _VECTOR_COLUMN = {CANONICAL: "vector", OWI_V2: "embedding"}
 _REQUIRED = {
-    CANONICAL: ("id", "vector"),
+    CANONICAL: ("vector",),
     OWI_V2: ("record_id", "chunk_idx", "embedding"),
 }
 
@@ -83,7 +88,7 @@ class Rows:
     vectors: np.ndarray  # float32, shape (kept, dimension)
     positions: np.ndarray  # int64, shape (kept,)
     rejected: int
-    ids: np.ndarray | None = None  # canonical: the file's own integer ids
+    ids: np.ndarray | None = None  # canonical: the file's own integer ids, if it has any
     record_ids: list[str] | None = None  # owi-v2
     chunk_idx: np.ndarray | None = None  # owi-v2
 
@@ -104,7 +109,7 @@ def detect_dialect(column_names) -> str:
         raise ParquetSourceError(
             "no known vector dialect: columns "
             f"{sorted(names)}; expected {list(_REQUIRED[CANONICAL])}"
-            f" (canonical) or {list(_REQUIRED[OWI_V2])} (owi-v2)"
+            f" (canonical, plus an optional 'id') or {list(_REQUIRED[OWI_V2])} (owi-v2)"
         )
     return matches[0]
 
@@ -221,8 +226,11 @@ def iter_ranges(uri: str, dimension: int, ranges):
     """
     handle, reader = _open(uri)
     try:
-        dialect = detect_dialect(reader.schema_arrow.names)
+        names = reader.schema_arrow.names
+        dialect = detect_dialect(names)
         columns = list(_REQUIRED[dialect])
+        if dialect == CANONICAL and "id" in names:
+            columns.append("id")  # the file's own ids, kept as provenance
         sizes = [
             reader.metadata.row_group(index).num_rows
             for index in range(reader.metadata.num_row_groups)
@@ -311,7 +319,7 @@ def _decode(uri, dialect, dimension, table, row_group, start, end) -> Rows:
             vectors=vectors,
             positions=positions,
             rejected=rejected,
-            ids=_integers(uri, kept, "id"),
+            ids=_integers(uri, kept, "id") if "id" in kept.column_names else None,
         )
     # the OWI publishes unit vectors, and float16 storage moves them off
     # length 1; scaled back, L2 ranks exactly like the cosine

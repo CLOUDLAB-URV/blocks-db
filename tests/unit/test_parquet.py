@@ -35,6 +35,12 @@ class TestInspect:
         assert info.dimension == 3
         assert info.row_groups == (6,)
 
+    def test_a_canonical_file_needs_no_id_column(self, tmp_path):
+        path = tmp_path / "vectors.parquet"
+        write_canonical(path, rows=6, dimension=3, with_ids=False)
+        info = inspect(str(path))
+        assert info.dialect == CANONICAL and info.dimension == 3
+
     def test_unknown_columns_are_named(self, tmp_path):
         path = tmp_path / "other.parquet"
         pq.write_table(pa.table({"a": [1], "b": [2]}), path)
@@ -149,6 +155,14 @@ class TestReadRows:
         assert rows.ids.tolist() == [103, 104, 105]
         np.testing.assert_allclose(rows.vectors, vectors[3:6])
         assert rows.record_ids is None
+
+    def test_canonical_rows_without_an_id_column_come_back_without_ids(self, tmp_path):
+        path = tmp_path / "vectors.parquet"
+        vectors = write_canonical(path, rows=6, dimension=3, row_group_size=3, with_ids=False)
+        rows = read_rows(str(path), row_group=1, dimension=3)
+        assert rows.ids is None and rows.record_ids is None
+        assert rows.positions.tolist() == [0, 1, 2]
+        np.testing.assert_allclose(rows.vectors, vectors[3:6])
 
 
 class TestDialectAndTyping:

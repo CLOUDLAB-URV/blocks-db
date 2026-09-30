@@ -30,14 +30,14 @@ def write_owi(path, rows, dimension=4, row_group_size=None, seed=0, bad_rows=())
     return stored / np.linalg.norm(stored, axis=1, keepdims=True)
 
 
-def write_canonical(path, rows, dimension=4, row_group_size=None, seed=1):
+def write_canonical(path, rows, dimension=4, row_group_size=None, seed=1, with_ids=True):
+    """A canonical file: vector (float32) and, unless ``with_ids`` is
+    false, id (int64) counting from 100."""
     rng = np.random.default_rng(seed)
     vectors = rng.random((rows, dimension)).astype(np.float32)
-    table = pa.table(
-        {
-            "id": pa.array(range(100, 100 + rows), pa.int64()),
-            "vector": pa.array([list(v) for v in vectors], pa.list_(pa.float32())),
-        }
-    )
+    columns = {"vector": pa.array([list(v) for v in vectors], pa.list_(pa.float32()))}
+    if with_ids:
+        columns["id"] = pa.array(range(100, 100 + rows), pa.int64())
+    table = pa.table(columns)
     pq.write_table(table, path, row_group_size=row_group_size or rows)
     return vectors

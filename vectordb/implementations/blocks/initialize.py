@@ -75,8 +75,9 @@ def build_block_from_parquet(block_plan, params, storage: Storage):
     assigns ``id_offset + position`` as the vector id, trains and fills
     one IVF block exactly as the CSV path does, and uploads the block
     plus its provenance map ``idmap/block_{i}.parquet`` (``id``,
-    ``record_id``, ``chunk_idx``; canonical files carry their own id as
-    ``record_id`` text and ``chunk_idx`` 0). Returns counts, not just
+    ``record_id``, ``chunk_idx``; canonical files carry their own id, or
+    the index id when they have none, as ``record_id`` text and
+    ``chunk_idx`` 0). Returns counts, not just
     time, so a build reports what it kept and what it rejected.
 
     Raises :class:`BlockTooSmall` when the rows that survive reading are
@@ -105,7 +106,9 @@ def build_block_from_parquet(block_plan, params, storage: Storage):
                 record_ids.extend(rows.record_ids)
                 chunk_idx[kept:end] = rows.chunk_idx
             else:
-                record_ids.extend(str(value) for value in rows.ids.tolist())
+                # a canonical file without an id column: the index id is the record id
+                ids = all_ids[kept:end] if rows.ids is None else rows.ids
+                record_ids.extend(str(value) for value in ids.tolist())
                 chunk_idx[kept:end] = 0
             kept = end
     matrix = matrix[:kept]
