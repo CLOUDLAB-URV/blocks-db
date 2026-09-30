@@ -57,6 +57,7 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 | `index_dataset(dataset_name, config, num_workers, save_config, track_indexed, setup_auto_indexer, csv_blocks)` | Run full indexing pipeline |
 | `index_parquet_dataset(dataset_name, sources, config, save_config, replace)` | Build an immutable index from parquet sources (see the parquet section of the README); requires `features`, `num_index` and `k` in the config; refuses a name that already holds an index unless `replace=True`, which deletes it first |
 | `provenance(dataset_name, ids, implementation)` | Map result ids back to `(record_id, chunk_idx)` for a parquet-built index |
+| `parquet_config(dataset_name)` | The saved configuration of a parquet-built index (`num_vectors`, `rejected`, `source_keys`, ...), or `None` |
 | `reindex_pending(dataset_name, config, num_workers)` | Rebuild all indexes with pending vectors included (refused on a parquet-built index, before anything is deleted) |
 | `index_pending_separate(dataset_name, config)` | Mark pending vectors as indexed without rebuilding |
 | `get_indexed_ids(dataset_name)` | Get all indexed vector IDs |

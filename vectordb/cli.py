@@ -520,7 +520,23 @@ def _run():
     elif args.command == "status":
         print(f"\n=== Status for '{args.name}' ===\n")
 
-        has_index = len(client.list_indexes(args.name)) > 0
+        indexes = client.list_indexes(args.name)
+        parquet = client.parquet_config(args.name, indexes)
+        if parquet is not None:
+            # an immutable index has nothing pending, and its counts come
+            # from the build: the id counter was seeded with the source
+            # rows, rejected ones included
+            print(f"Dataset: {args.name}")
+            print("  Indexed: YES")
+            print("  Source format: parquet")
+            print(f"  Indexed vectors: {parquet['num_vectors']}")
+            print(f"  Rejected rows: {parquet['rejected']}")
+            if args.verbose:
+                print(f"  Blocks: {parquet['num_index']}")
+                print(f"  Source files: {len(parquet['source_keys'])}")
+            return
+
+        has_index = len(indexes) > 0
         has_pending = client.has_pending_vectors(args.name)
         
         # Use DynamoDB counter for count (faster)

@@ -255,14 +255,25 @@ class VectorDBClient:
 
         return datasets
 
+    def parquet_config(self, dataset_name: str, indexes=None):
+        """The saved configuration of the index a dataset holds when it was
+        built from parquet, or None: no index, or one built from CSV.
+        ``indexes`` is the result of ``list_indexes`` when the caller
+        already has it."""
+        if indexes is None:
+            indexes = self.list_indexes(dataset_name)
+        for implementation, num_index in indexes:
+            config = load_index_config(self.bucket, dataset_name, implementation, num_index)
+            if config.get("source_format") == "parquet":
+                return config
+        return None
+
     def refuse_on_parquet(self, dataset_name: str, reason: str):
         """Stop a CSV-path feature on an index built from parquet, before it
         reads a source.csv that does not exist or deletes blocks it cannot
         rebuild."""
-        for implementation, num_index in self.list_indexes(dataset_name):
-            config = load_index_config(self.bucket, dataset_name, implementation, num_index)
-            if config.get("source_format") == "parquet":
-                raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {reason}")
+        if self.parquet_config(dataset_name) is not None:
+            raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {reason}")
 
     def get_vectors(self, dataset_name: str, ids):
         """Get vectors by their IDs from the dataset."""

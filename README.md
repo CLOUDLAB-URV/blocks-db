@@ -373,6 +373,10 @@ blocks-db status mydataset
 blocks-db status mydataset -v
 ```
 
+For an index built from parquet, `status` shows the vectors the build kept
+and the rows it rejected, from the saved configuration; such an index has no
+pending vectors.
+
 ---
 
 ## 📖 Commands Reference
