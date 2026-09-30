@@ -5,7 +5,7 @@ from botocore.exceptions import ClientError
 
 from helpers import write_owi
 from vectordb import client as client_module
-from vectordb.client import IndexExists, NoIndex, VectorDBClient
+from vectordb.client import IndexExists, NoIndex, NotAvailableOnParquet, VectorDBClient
 from vectordb.indexing.planner import PlanError
 from vectordb.utils.parquet import ParquetSourceError
 
@@ -31,6 +31,10 @@ class FakeS3:
 
         return Paginator()
 
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        found = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
+        return {"Contents": [{"Key": key} for key in found]} if found else {}
+
     def delete_objects(self, Bucket, Delete):
         self.deleted += [item["Key"] for item in Delete["Objects"]]
 
@@ -53,6 +57,7 @@ def client_with(fake_s3=None) -> VectorDBClient:
     client.bucket = "bucket"
     client.wait_timeout = None
     client.s3 = fake_s3 or FakeS3()
+    client._no_parquet_index = set()
     client.tracker = FakeTracker()
     return client
 
@@ -266,6 +271,19 @@ class TestIndexParquetDataset:
         assert client.s3.deleted == [] and client.s3.uploads == {}
         assert client.s3.objects["indexes/ds/blocks/centroid_0.ann"] == b"an index"
         assert stub_db.built is None
+
+    def test_a_put_after_the_build_is_refused_by_the_client_that_built_it(self, partitioned_corpus, stub_db):
+        # the client remembers a name found without a parquet index; its own
+        # build must not leave it trusting what it knew before
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        assert client.put_vectors("ds", [(1, [0.0, 0.0, 0.0, 1.0])]) == 1  # no index yet
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        client.s3.objects["indexes/ds/blocks/idmap/block_0.parquet"] = b"written by the functions"
+        with pytest.raises(NotAvailableOnParquet, match="immutable"):
+            client.put_vectors("ds", [(2, [0.0, 0.0, 0.0, 1.0])])
 
     def test_an_interrupted_build_is_cleaned_up_like_a_failed_one(self, partitioned_corpus, stub_db):
         # Ctrl-C raises KeyboardInterrupt, which is not an Exception: the

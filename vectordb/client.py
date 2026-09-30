@@ -149,6 +149,8 @@ class VectorDBClient:
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url
         self.wait_timeout = wait_timeout
+        # dataset names found without a parquet index, see _refuse_on_parquet
+        self._no_parquet_index = set()
 
         if region:
             self.s3 = boto3.client("s3", region_name=region)
@@ -163,7 +165,7 @@ class VectorDBClient:
         Renames automatically to vectors_{name}.csv
         """
 
-        self._refuse_on_parquet(name, _CSV_BUILD_UNAVAILABLE)
+        self._refuse_on_parquet(name, _CSV_BUILD_UNAVAILABLE, fresh=True)
 
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"{csv_path} not found.")
@@ -270,12 +272,27 @@ class VectorDBClient:
                 return config
         return None
 
-    def _refuse_on_parquet(self, dataset_name: str, reason: str):
+    def _refuse_on_parquet(self, dataset_name: str, reason: str, fresh: bool = False):
         """Stop a CSV-path feature on an index built from parquet, before it
         reads a source.csv that does not exist or deletes blocks it cannot
-        rebuild."""
-        if self.parquet_config(dataset_name) is not None:
+        rebuild.
+
+        Only a parquet build writes an id map beside its blocks, and it
+        builds blocks only, so a listing capped at one key answers for an
+        index of any size. A name found without one is remembered for the
+        life of the client, so a loop of put_vector asks S3 once; a refusal
+        is not remembered, so a parquet index deleted elsewhere does not
+        keep its name refused. ``fresh`` asks again: what overwrites or
+        deletes an index must not trust an answer another process may have
+        changed since.
+        """
+        if not fresh and dataset_name in self._no_parquet_index:
+            return
+        listing = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=idmap_prefix(dataset_name, "blocks"), MaxKeys=1)
+        if "Contents" in listing:
+            self._no_parquet_index.discard(dataset_name)
             raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {reason}")
+        self._no_parquet_index.add(dataset_name)
 
     def refuse_put_on_parquet(self, dataset_name: str):
         """Stop vectors from being added to an index built from parquet."""
@@ -327,7 +344,7 @@ class VectorDBClient:
             dict: Timing stats from the indexing process.
         """
 
-        self._refuse_on_parquet(dataset_name, _CSV_BUILD_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _CSV_BUILD_UNAVAILABLE, fresh=True)
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
@@ -416,6 +433,8 @@ class VectorDBClient:
         Returns the indexing timers plus ``rows``, ``rejected`` and the
         per-block reports.
         """
+        # the name is about to hold a parquet index, whatever it held before
+        self._no_parquet_index.discard(dataset_name)
         # plan from the footers first: a build that cannot succeed
         # must not have copied the corpus into the bucket beforehand
         local = [source for source in sources if not source.startswith("s3://")]
@@ -615,7 +634,7 @@ class VectorDBClient:
         Returns:
             Timing stats from the indexing process
         """
-        self._refuse_on_parquet(dataset_name, _REINDEX_UNAVAILABLE)
+        self._refuse_on_parquet(dataset_name, _REINDEX_UNAVAILABLE, fresh=True)
         if not self.has_pending_vectors(dataset_name):
             print("No pending vectors to reindex.")
             return {}

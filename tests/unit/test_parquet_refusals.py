@@ -1,5 +1,6 @@
 """An index built from parquet refuses the CSV-path features it cannot
-serve, and says why, instead of answering with nothing or failing in S3."""
+serve, and says why, instead of answering with nothing or failing in S3.
+Deleting a parquet dataset removes the copies its build uploaded."""
 
 from types import SimpleNamespace
 
@@ -12,13 +13,55 @@ from vectordb.client import NotAvailableOnParquet, VectorDBClient
 from vectordb.utils import dataset_ops, index_ops
 
 
+class FakeBucket:
+    """The listings and deletes the client makes, over a set of keys.
+    A listing under ``refused`` fails the way S3 reports a denied one."""
+
+    def __init__(self, keys, refused=None):
+        self.keys = set(keys)
+        self.refused = refused
+        self.listings = []
+
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        self.listings.append((Prefix, MaxKeys))
+        found = sorted(key for key in self.keys if key.startswith(Prefix))[:MaxKeys]
+        return {"Contents": [{"Key": key} for key in found]} if found else {}
+
+    def delete_object(self, Bucket, Key):
+        self.keys.discard(Key)
+
+    def get_paginator(self, _name):
+        keys, refused = self.keys, self.refused
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                if refused and Prefix.startswith(refused):
+                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "ListObjectsV2")
+                yield {"Contents": [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]}
+
+        return Paginator()
+
+    def delete_objects(self, Bucket, Delete):
+        self.keys -= {item["Key"] for item in Delete["Objects"]}
+
+
+INDEX_KEYS = {
+    None: [],
+    "csv": ["indexes/ds/blocks/config.json", "indexes/ds/blocks/centroid_0.ann"],
+    "parquet": ["indexes/ds/blocks/config.json", "indexes/ds/blocks/centroid_0.ann", "indexes/ds/blocks/idmap/block_0.parquet"],
+}
+
+
 def client_for(monkeypatch, source_format):
-    """A client whose dataset ``ds`` has one index built from
-    ``source_format``: "parquet", "csv" (a config from before the parquet
-    path, without the key), or None for no index at all."""
+    """A client whose dataset ``ds`` holds what ``source_format`` says:
+    "parquet" (an id map under indexes/ds/blocks/idmap/ and a config with
+    the key), "csv" (blocks and a config without it), or None (nothing).
+    The id map decides the refusals; the config decides a tag filter."""
     client = object.__new__(VectorDBClient)
     client.bucket = "bucket"
     client.wait_timeout = None
+    client.s3 = FakeBucket(INDEX_KEYS[source_format])
+    client._no_parquet_index = set()
     client.tracker = SimpleNamespace(
         table_name="table",
         dynamodb=SimpleNamespace(meta=SimpleNamespace(client=SimpleNamespace(meta=SimpleNamespace(region_name="region")))),
@@ -116,6 +159,54 @@ class TestClient:
         assert client.get_vectors("ds", [1]) == {"read": True}
 
 
+class TestWhatTheCheckCosts:
+    @pytest.mark.parametrize("source_format", ["csv", None])
+    def test_a_loop_of_puts_and_a_read_ask_s3_once(self, monkeypatch, source_format):
+        # before, every call listed the whole index prefix and read each config
+        client = client_for(monkeypatch, source_format)
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        monkeypatch.setattr(client_module, "load_index_config", lambda *args: pytest.fail("a config was read"))
+        monkeypatch.setattr(client_module, "get_vectors_by_id", lambda *args: {})
+        for vector_id in range(100):
+            client.put_vector("ds", vector_id, [0.0, 1.0])
+        client.get_vectors("ds", [1])
+        assert client.s3.listings == [("indexes/ds/blocks/idmap/", 1)]
+
+    @pytest.mark.parametrize("call", [
+        lambda c: c.index_dataset("ds", {"implementation": "blocks", "num_index": 4}),
+        lambda c: c.reindex_pending("ds"),
+        lambda c: c.create_dataset("ds", "absent.csv"),  # refused before the path is looked at
+    ], ids=["index_dataset", "reindex_pending", "create_dataset"])
+    def test_what_overwrites_or_deletes_an_index_looks_again(self, monkeypatch, call):
+        client = client_for(monkeypatch, "csv")
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        client.tracker.has_pending_vectors = lambda name: True
+        client.tracker.get_pending_vectors = lambda name: [(1, [0.0, 1.0])]
+        client.put_vector("ds", 1, [0.0, 1.0])
+        # another process replaces the index with a parquet build meanwhile
+        client.s3.keys.add("indexes/ds/blocks/idmap/block_0.parquet")
+        monkeypatch.setattr(client_module, "ServerlessVectorDB", lambda **config: pytest.fail("the build started"))
+        monkeypatch.setattr(client_module, "delete_indexes", lambda *args: pytest.fail("the blocks were deleted"))
+        monkeypatch.setattr(client_module, "upload_dataset", lambda *args: pytest.fail("the upload started"))
+        with pytest.raises(NotAvailableOnParquet, match="'ds' was built from parquet"):
+            call(client)
+        assert len(client.s3.listings) == 2
+        # and the calls that do not look again no longer trust the old answer
+        with pytest.raises(NotAvailableOnParquet):
+            client.put_vector("ds", 2, [0.0, 1.0])
+
+    def test_a_refusal_is_not_remembered(self, monkeypatch):
+        # a parquet index deleted by another process must not keep its name
+        # refused for the life of this client
+        client = client_for(monkeypatch, "parquet")
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        with pytest.raises(NotAvailableOnParquet):
+            client.put_vector("ds", 1, [0.0, 1.0])
+        client.s3.keys.clear()
+        assert client.put_vector("ds", 1, [0.0, 1.0]) == 1
+        assert len(client.s3.listings) == 2
+
+
 class RefusingClient:
     """What the CLI sees for a parquet dataset."""
 
@@ -164,32 +255,6 @@ class TestCli:
         vectors = tmp_path / "vectors.csv"
         vectors.write_text("7,0.0 1.0\n")
         assert run("put", "ds", str(vectors)).startswith("Error: 'ds' was built from parquet")
-
-
-class FakeBucket:
-    """The listing and deletes delete_dataset makes, over a set of keys.
-    A listing under ``refused`` fails the way S3 reports a denied one."""
-
-    def __init__(self, keys, refused=None):
-        self.keys = set(keys)
-        self.refused = refused
-
-    def delete_object(self, Bucket, Key):
-        self.keys.discard(Key)
-
-    def get_paginator(self, _name):
-        keys, refused = self.keys, self.refused
-
-        class Paginator:
-            def paginate(self, Bucket, Prefix):
-                if refused and Prefix.startswith(refused):
-                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "ListObjectsV2")
-                yield {"Contents": [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]}
-
-        return Paginator()
-
-    def delete_objects(self, Bucket, Delete):
-        self.keys -= {item["Key"] for item in Delete["Objects"]}
 
 
 def test_deleting_a_dataset_removes_the_parquet_copies_it_uploaded(monkeypatch):
