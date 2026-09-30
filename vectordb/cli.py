@@ -108,8 +108,8 @@ def _run():
     init_parser.add_argument("--format", choices=("csv", "parquet"), default="csv", help="Source format (default: csv). parquet builds an immutable index: no csv_blocks, no auto-indexer; features, num_index and k must be declared in the config")
     init_parser.add_argument("--config", required=True, help="Path to index config JSON")
     init_parser.add_argument("--replace", action="store_true", help="With --format parquet: delete an existing index of the same name and build again")
-    init_parser.add_argument("--files", default="*.parquet", help="With --format parquet: the file names read from a directory or s3:// prefix (default: *.parquet). For an Open Web Index day, whose directories also hold records files: '*_embeddings.parquet'")
-    init_parser.add_argument("--workers", type=int, default=16, help="Number of indexing workers")
+    init_parser.add_argument("--files", default=None, help="With --format parquet: the file names read from a directory or s3:// prefix (default: *.parquet). For an Open Web Index day, whose directories also hold records files: '*_embeddings.parquet'")
+    init_parser.add_argument("--workers", type=int, default=None, help="Number of indexing workers (default: 16)")
     init_parser.add_argument("--no-update-threshold", action="store_true", help="Skip auto-update threshold after indexing")
     init_parser.add_argument("--skip-auto-indexer", action="store_true", help="Skip DynamoDB state init and vector tracking (for pure benchmarks)")
     init_parser.add_argument("--build-local", action="store_true", help="Build csv_blocks from local file (skip S3 re-download during tracking)")
@@ -161,6 +161,17 @@ def _run():
     get_parser.add_argument("--pending", action="store_true", help="Get pending vectors instead of main")
 
     args = parser.parse_args()
+
+    if args.command == "initialize-database":
+        # an option of the other format is refused, not ignored; an option
+        # not given is None, or False for a flag, and any other value (0
+        # included) was typed by the user
+        csv_only = ("--workers", "--no-update-threshold", "--skip-auto-indexer", "--build-local", "--csv-block-size")
+        parquet_only = ("--replace", "--files")
+        for option in csv_only if args.format == "parquet" else parquet_only:
+            value = getattr(args, option[2:].replace("-", "_"))
+            if value is not None and value is not False:
+                init_parser.error(f"{option} does not apply to --format {args.format}")
 
     VISIBLE_COMMANDS = {
         "setup", "configure", "refresh-credentials", "update-threshold",
@@ -315,7 +326,7 @@ def _run():
             pages = client.s3.get_paginator("list_objects_v2").paginate(Bucket=bucket_name, Prefix=prefix)
             return [item["Key"] for page in pages for item in page.get("Contents", [])]
 
-        sources = expand_sources(args.source, list_s3, files=args.files)
+        sources = expand_sources(args.source, list_s3, files="*.parquet" if args.files is None else args.files)
         print(f"\n=== Building index for '{args.name}' from {len(sources)} parquet file(s) ===")
         times = client.index_parquet_dataset(args.name, sources, config, replace=args.replace)
         print(f"Index built successfully.")
@@ -347,7 +358,7 @@ def _run():
         times = client.index_dataset(
             dataset_name=args.name,
             config=config,
-            num_workers=args.workers,
+            num_workers=16 if args.workers is None else args.workers,
             setup_auto_indexer=not args.skip_auto_indexer,
             csv_blocks=csv_blocks
         )

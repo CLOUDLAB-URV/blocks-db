@@ -469,7 +469,10 @@ raising the setting, delete the runtime and deploy it again, or use more
 blocks.
 
 What a parquet build does **not** do, by design: no CSV byte-offset blocks,
-no auto-indexer state, no tags. The index is immutable; rebuild it to change
+no auto-indexer state, no tags. The options of a CSV build (`--workers`,
+`--build-local`, `--csv-block-size`, `--skip-auto-indexer`,
+`--no-update-threshold`) are refused with `--format parquet`, as `--replace`
+and `--files` are without it. The index is immutable; rebuild it to change
 it. A build refuses a name that already holds an index; `--replace` deletes
 that index first. The commands that need what it lacks stop with an error
 that says so:
