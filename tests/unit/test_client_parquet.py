@@ -196,7 +196,7 @@ class TestIndexParquetDataset:
         assert client.s3.uploads == {} and client.s3.deleted == []
         assert client.tracker.seeded is None and stub_db.built is None
 
-    def test_replace_deletes_the_previous_index_and_builds(self, partitioned_corpus, stub_db):
+    def test_replace_deletes_the_previous_index_and_builds(self, partitioned_corpus, stub_db, capsys):
         client = client_with()
         from vectordb.indexing.prepare import expand_sources
 
@@ -205,6 +205,24 @@ class TestIndexParquetDataset:
         client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
         assert sorted(client.s3.deleted) == ["indexes/ds/blocks/centroid_0.ann", "indexes/ds/blocks/config.json"]
         assert stub_db.built is not None and "indexes/ds/blocks/config.json" in client.s3.objects
+        # what was removed was the index being replaced, not a failed build
+        assert "Removed 2 objects of the previous index under indexes/ds/blocks/" in capsys.readouterr().out
+
+    def test_a_counter_that_cannot_be_seeded_leaves_the_previous_index_intact(self, partitioned_corpus, stub_db):
+        # the seed is the first write of a build; with replace it must also
+        # come before the old index is deleted, or a refused write leaves
+        # nothing to search
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        client.s3.objects["indexes/ds/blocks/config.json"] = b"{}"
+        client.tracker.fail = True
+        with pytest.raises(RuntimeError, match="cannot seed the id counter"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.deleted == [] and client.s3.uploads == {}
+        assert client.s3.objects["indexes/ds/blocks/centroid_0.ann"] == b"an index"
+        assert stub_db.built is None
 
     def test_an_interrupted_build_is_cleaned_up_like_a_failed_one(self, partitioned_corpus, stub_db):
         # Ctrl-C raises KeyboardInterrupt, which is not an Exception: the

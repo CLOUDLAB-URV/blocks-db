@@ -379,11 +379,12 @@ class VectorDBClient:
         path never calls ``_get_vector_count``, ``csv_blocks`` or the
         auto-indexer set-up. Its only DynamoDB write sets the id counter to
         the number of source rows, so ids handed out from the counter start
-        above the ids of the index; it happens before anything is uploaded
-        or invoked, and a seed that fails stops the build. A name that already holds an index is
-        refused unless ``replace`` is set, and then the old index is
-        deleted first: built beside it, a smaller build would leave old
-        blocks and id map parts to be served with the new ones.
+        above the ids of the index; it happens before anything is deleted,
+        uploaded or invoked, and a seed that fails stops the build with the
+        old index intact. A name that already holds an index is refused
+        unless ``replace`` is set, and then the old index is deleted before
+        the new one is built: built beside it, a smaller build would leave
+        old blocks and id map parts to be served with the new ones.
 
         Returns the indexing timers plus ``rows``, ``rejected`` and the
         per-block reports.
@@ -402,14 +403,15 @@ class VectorDBClient:
                 f"'{dataset_name}' already holds an index ({existing} objects under {prefix});"
                 " pass replace=True (--replace) to delete it and build again"
             )
-        if existing:
-            self._delete_blocks(dataset_name, sealed["implementation"])
         if save_config:
             # the one DynamoDB write of this path goes first: a missing table
-            # or permission must cost no upload and no function. The seed is
-            # the footer total, so the gaps rejected rows leave in the id
-            # space are never handed out from the counter.
+            # or permission must cost no upload, no function and no index
+            # deleted. The seed is the footer total, so the gaps rejected
+            # rows leave in the id space are never handed out from the
+            # counter.
             self.tracker.initialize_next_id(dataset_name, build_plan.total_vectors, strict=True)
+        if existing:
+            self._delete_blocks(dataset_name, sealed["implementation"], "the previous index")
 
         root = os.path.commonpath([os.path.abspath(s) for s in local]) if local else ""
         if local and os.path.isfile(root):
@@ -443,7 +445,7 @@ class VectorDBClient:
             # finish would otherwise be served under an older config.json.
             # BaseException, not Exception: an interrupted client (Ctrl-C)
             # leaves the same half-built index as a failed function
-            self._delete_blocks(dataset_name, sealed["implementation"])
+            self._delete_blocks(dataset_name, sealed["implementation"], "the failed build")
             raise
         print(f"Indexing completed: {times['rows']:,} vectors kept, {times['rejected']:,} rows rejected.")
 
@@ -456,14 +458,15 @@ class VectorDBClient:
             times["save_config"] = time.time() - t0
         return times
 
-    def _delete_blocks(self, dataset_name: str, implementation: str) -> None:
+    def _delete_blocks(self, dataset_name: str, implementation: str, what: str) -> None:
+        """Remove every object of the index; ``what`` names it in the message."""
         prefix = f"indexes/{dataset_name}/{implementation}/"
         pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix)
         keys = [{"Key": item["Key"]} for page in pages for item in page.get("Contents", [])]
         for start in range(0, len(keys), 1000):
             self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": keys[start:start + 1000]})
         if keys:
-            print(f"Removed {len(keys)} objects of the failed build under {prefix}")
+            print(f"Removed {len(keys)} objects of {what} under {prefix}")
 
     def provenance(self, dataset_name: str, ids, implementation: str = "blocks") -> dict:
         """``{id: (record_id, chunk_idx)}`` for parquet-built blocks, read
