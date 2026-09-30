@@ -229,29 +229,29 @@ class VectorDBClient:
         return refresh_lithops_credentials()
 
     def list_datasets(self):
-        """
-        List all datasets in bucket following naming convention.
-        """
-
-        response = self.s3.list_objects_v2(Bucket=self.bucket, Prefix="datasets/")
-
+        """Every dataset name in the bucket, in the order S3 lists them:
+        the names under datasets/ first, then those only an index names."""
         datasets = []
+        paginator = self.s3.get_paginator("list_objects_v2")
 
-        if "Contents" not in response:
-            return datasets
+        # datasets/{name}/source.csv for a CSV build, and
+        # datasets/{name}/source/... for a parquet build from local files
+        for page in paginator.paginate(Bucket=self.bucket, Prefix="datasets/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                parts = key.split("/")
+                if len(parts) >= 3 and (key.endswith("/source.csv") or parts[2] == "source"):
+                    if parts[1] not in datasets:
+                        datasets.append(parts[1])
 
-        for obj in response["Contents"]:
-            key = obj["Key"]
-
-            # datasets/{name}/source.csv for a CSV build, and
-            # datasets/{name}/source/... for a parquet one
-            parts = key.split("/")
-            if len(parts) >= 3 and parts[0] == "datasets" and (
-                key.endswith("/source.csv") or parts[2] == "source"
-            ):
-                name = parts[1]
-                if name not in datasets:
-                    datasets.append(name)
+        # a parquet build that read its sources in place from s3:// leaves
+        # nothing under datasets/; its saved configuration,
+        # indexes/{name}/{implementation}/config.json, names it
+        for page in paginator.paginate(Bucket=self.bucket, Prefix="indexes/"):
+            for obj in page.get("Contents", []):
+                parts = obj["Key"].split("/")
+                if len(parts) == 4 and parts[3] == "config.json" and parts[1] not in datasets:
+                    datasets.append(parts[1])
 
         return datasets
 

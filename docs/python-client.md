@@ -21,7 +21,7 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 |--------|-------------|
 | `create_dataset(name, csv_path)` | Upload a local CSV file as a new dataset |
 | `delete_dataset(name)` | Delete dataset and all its data from S3 and DynamoDB, including the parquet copies a build uploaded (never a source read in place) |
-| `list_datasets()` | List all datasets in the bucket |
+| `list_datasets()` | List all datasets in the bucket, including a parquet-built index whose sources were read in place from `s3://` |
 | `save_index_config(name, config)` | Save index configuration to S3 |
 | `delete_index_configs(name)` | Delete all saved config.json files for a dataset |
 | `list_indexes(name)` | List available index configs for a dataset |
