@@ -1,5 +1,5 @@
 """What the command line refuses before any work starts: an option of the
-format a build is not using."""
+format a build is not using, and a path that does not exist."""
 
 import json
 
@@ -79,3 +79,33 @@ class TestAnOptionOfTheOtherFormat:
 
     def test_a_csv_build_takes_the_workers_it_is_given(self, build):
         assert build("vectors.csv", "--no-update-threshold", "--workers", "4")["num_workers"] == 4
+
+
+class TestAPathThatDoesNotExist:
+    @pytest.mark.parametrize("argv", [
+        ["initialize-database", "ds", "{missing}", "--config", "{config}"],
+        ["initialize-database", "ds", "{csv}", "--config", "{missing}"],
+        ["initialize-database", "ds", "{parquet}", "--format", "parquet", "--config", "{missing}"],
+        ["put", "ds", "{missing}"],
+        ["query", "ds", "--file", "{missing}"],
+    ], ids=["csv-source", "config", "config-of-a-parquet-build", "put", "query-file"])
+    def test_the_command_ends_naming_it_before_anything_is_handed_to_the_client(self, run, tmp_path, argv):
+        missing = tmp_path / "missing"
+        argv = [word.format(missing=missing, config=tmp_path / "index.json", csv=tmp_path / "vectors.csv", parquet=tmp_path / "a.parquet")
+                for word in argv]
+        with pytest.raises(SystemExit) as stopped:
+            run(*argv)
+        assert str(stopped.value.code) == f"Error: {missing}: not found"
+        assert run.handed == {}
+
+    def test_a_file_not_found_error_inside_the_client_is_a_defect_and_keeps_its_traceback(self, run, monkeypatch):
+        class BrokenClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def list_indexes(self, name):
+                raise FileNotFoundError("/tmp/blocks/part-3.npy")
+
+        monkeypatch.setattr(cli, "VectorDBClient", BrokenClient)
+        with pytest.raises(FileNotFoundError):
+            run("status", "ds")

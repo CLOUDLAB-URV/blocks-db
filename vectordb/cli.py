@@ -42,7 +42,6 @@ EXPECTED_ERRORS = (
     ParquetSourceError,     # a source that cannot be read, named
     BlockTooSmall,          # fewer rows left in a block than its IVF lists
     CounterUnavailable,     # DynamoDB refused the id counter of a build
-    FileNotFoundError,      # a path given on the command line
     FunctionsTimedOut,      # functions that never finished
 )
 
@@ -172,6 +171,21 @@ def _run():
             value = getattr(args, option[2:].replace("-", "_"))
             if value is not None and value is not False:
                 init_parser.error(f"{option} does not apply to --format {args.format}")
+
+    # a path given on the command line that does not exist ends the command
+    # here, named, before anything is opened or uploaded; a FileNotFoundError
+    # raised later is a defect and keeps its traceback. A parquet source is
+    # checked when it is expanded.
+    paths = []
+    if args.command == "initialize-database":
+        paths = [args.config] if args.format == "parquet" else [args.config, args.source]
+    elif args.command == "put":
+        paths = [args.csv_path]
+    elif args.command == "query" and args.file:
+        paths = [args.file]
+    for path in paths:
+        if not os.path.exists(path):
+            sys.exit(f"Error: {path}: not found")
 
     VISIBLE_COMMANDS = {
         "setup", "configure", "refresh-credentials", "update-threshold",
@@ -455,8 +469,6 @@ def _run():
             print(f"Query: {vector[:5]}...")
             print(f"Results: {[_fmt_result(r) for r in results[:args.k]]}")
         elif args.file:
-            if not os.path.exists(args.file):
-                raise FileNotFoundError(args.file)
             results, times = client.query_from_file(args.name, args.file, hybrid=hybrid, k=args.k, batch_size=args.batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
             print(f"Results ({len(results)} queries):")
             for i, res in enumerate(results[:5]):

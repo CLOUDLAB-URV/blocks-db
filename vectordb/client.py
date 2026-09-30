@@ -26,6 +26,7 @@ from .utils.index_ops import (
 
 from .utils.vector_tracking import VectorIndexTracker
 from .utils.idmap import idmap_prefix, select as select_provenance
+from .utils.parquet import ParquetSourceError
 from .indexing.prepare import prepare_build
 
 
@@ -407,7 +408,7 @@ class VectorDBClient:
         local = [source for source in sources if not source.startswith("s3://")]
         for source in local:
             if not os.path.exists(source):
-                raise FileNotFoundError(f"{source} not found.")
+                raise ParquetSourceError(f"{source}: not found")
         build_plan, sealed = prepare_build(list(sources), config)
         prefix = f"indexes/{dataset_name}/{sealed['implementation']}/"
         existing = sum(len(page.get("Contents", [])) for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix))

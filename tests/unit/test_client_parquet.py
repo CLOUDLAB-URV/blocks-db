@@ -5,6 +5,7 @@ import pytest
 from helpers import write_owi
 from vectordb.client import IndexExists, VectorDBClient
 from vectordb.indexing.planner import PlanError
+from vectordb.utils.parquet import ParquetSourceError
 
 
 class FakeS3:
@@ -164,6 +165,12 @@ class TestIndexParquetDataset:
             client.index_parquet_dataset("ds", sources, {"implementation": "blocks", "num_index": 2, "features": 4})
         assert client.s3.uploads == {}
         assert stub_db.built is None
+
+    def test_a_local_source_that_does_not_exist_is_refused_by_name(self, tmp_path, stub_db):
+        client = client_with()
+        with pytest.raises(ParquetSourceError, match="missing.parquet: not found"):
+            client.index_parquet_dataset("ds", [str(tmp_path / "missing.parquet")], config())
+        assert client.s3.uploads == {} and client.tracker.seeded is None
 
     def test_a_counter_that_cannot_be_seeded_stops_the_build_before_it_starts(self, partitioned_corpus, stub_db):
         client = client_with()
