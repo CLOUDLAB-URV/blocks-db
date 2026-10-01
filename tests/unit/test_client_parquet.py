@@ -31,6 +31,11 @@ class FakeS3:
 
         return Paginator()
 
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ContentLength": len(self.objects[Key])}
+
     def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
         found = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
         return {"Contents": [{"Key": key} for key in found]} if found else {}
@@ -219,12 +224,40 @@ class TestIndexParquetDataset:
         assert client.s3.uploads == {} and client.s3.deleted == []
         assert client.tracker.seeded is None and stub_db.built is None
 
+    @pytest.mark.parametrize("key", ["datasets/ds/source.csv", "pending/ds/1.csv"])
+    def test_a_name_that_holds_a_csv_dataset_is_refused_even_with_replace(self, partitioned_corpus, stub_db, key):
+        # queries of the name would still search its pending vectors, whose
+        # ids may be the new index's, so the CSV dataset goes with
+        # delete-dataset and never as a side effect of a build
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects[key] = b"1,0.1 0.2 0.3 0.4\n"
+        with pytest.raises(IndexExists, match=r"'ds' holds a CSV dataset .*; delete it with delete_dataset\(\) \(delete-dataset\)"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.uploads == {} and client.s3.deleted == []
+        assert client.tracker.seeded is None and stub_db.built is None
+
+    def test_a_refused_look_at_source_csv_is_not_taken_for_its_absence(self, partitioned_corpus, stub_db):
+        class DeniedHead(FakeS3):
+            def head_object(self, Bucket, Key):
+                raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject")
+
+        client = client_with(DeniedHead())
+        from vectordb.indexing.prepare import expand_sources
+
+        with pytest.raises(ClientError, match="403"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.tracker.seeded is None and stub_db.built is None
+
     def test_replace_deletes_the_previous_index_and_builds(self, partitioned_corpus, stub_db, capsys):
         client = client_with()
         from vectordb.indexing.prepare import expand_sources
 
         client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
         client.s3.objects["indexes/ds/blocks/config.json"] = b"{}"
+        # the copies of a previous build from local files are not a CSV dataset
+        client.s3.objects["datasets/ds/source/language=spa/metadata_0_embeddings.parquet"] = b"previous upload"
         client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
         assert sorted(client.s3.deleted) == ["indexes/ds/blocks/centroid_0.ann", "indexes/ds/blocks/config.json"]
         assert stub_db.built is not None and "indexes/ds/blocks/config.json" in client.s3.objects

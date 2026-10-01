@@ -41,7 +41,8 @@ class NotAvailableOnParquet(RuntimeError):
 
 
 class IndexExists(RuntimeError):
-    """A parquet build asked for a name that already holds an index."""
+    """A parquet build asked for a name that already holds an index or a CSV
+    dataset."""
 
 
 class NoIndex(ValueError):
@@ -428,8 +429,10 @@ class VectorDBClient:
             config: Index configuration; must declare features, num_index and k
             save_config: If True, seeds the id counter in DynamoDB with the number
                          of source rows and saves the index configuration to S3
-            replace: If True, deletes an existing index of the same name before
-                     building; otherwise a name that holds an index raises IndexExists
+            replace: If True, deletes an existing parquet index of the same name
+                     before building; otherwise a name that holds an index raises
+                     IndexExists. A name that holds a CSV dataset (source.csv or
+                     pending vectors) raises IndexExists either way
 
         Returns:
             dict: Timing stats from the indexing process, plus rows (vectors kept),
@@ -444,6 +447,18 @@ class VectorDBClient:
             if not os.path.exists(source):
                 raise ParquetSourceError(f"{source}: not found")
         build_plan, sealed = prepare_build(list(sources), config)
+        # a CSV dataset of the same name keeps pending vectors that its
+        # queries would still search, with ids the new index may also use:
+        # it goes with delete-dataset, never as a side effect of a build
+        source_csv, pending = f"datasets/{dataset_name}/source.csv", f"pending/{dataset_name}/"
+        csv_data = [source_csv] if self._has_key(source_csv) else []
+        if self.s3.list_objects_v2(Bucket=self.bucket, Prefix=pending, MaxKeys=1).get("Contents"):
+            csv_data.append(pending)
+        if csv_data:
+            raise IndexExists(
+                f"'{dataset_name}' holds a CSV dataset ({', '.join(csv_data)});"
+                " delete it with delete_dataset() (delete-dataset) before a parquet build"
+            )
         prefix = f"indexes/{dataset_name}/{sealed['implementation']}/"
         existing = sum(len(page.get("Contents", [])) for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix))
         if existing and not replace:
@@ -508,6 +523,17 @@ class VectorDBClient:
             save_index_config(self.bucket, dataset_name, sealed, s3_client=self.s3)
             times["save_config"] = time.time() - t0
         return times
+
+    def _has_key(self, key: str) -> bool:
+        """Whether ``key`` exists. It is asked for by name: a directory
+        bucket lists only prefixes that end in '/'."""
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError as error:
+            if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
 
     def _delete_blocks(self, dataset_name: str, implementation: str, what: str) -> None:
         """Remove every object of the index; ``what`` names it in the message."""

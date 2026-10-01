@@ -326,7 +326,7 @@ blocks-db initialize-database mydata /path/to/parquet --format parquet --config 
 
 `--workers`, `--build-local`, `--csv-block-size`, `--skip-auto-indexer` and `--no-update-threshold` belong to a CSV build and are refused with `--format parquet`; `--files` and `--replace` are refused without it.
 
-Without `--replace`, a name that already holds an index is refused. A build that fails or is interrupted while its functions run removes the blocks written so far; with `--replace`, the previous index is already deleted by then. Functions still running on AWS Lambda finish and may write their blocks afterwards; `--replace` or `delete-dataset` removes them.
+Without `--replace`, a name that already holds an index is refused. A name that holds a CSV dataset (its `source.csv` or pending vectors) is refused even with `--replace`, since its queries would still search the pending vectors: remove it with `delete-dataset` first. A build that fails or is interrupted while its functions run removes the blocks written so far; with `--replace`, the previous index is already deleted by then. Functions still running on AWS Lambda finish and may write their blocks afterwards; `--replace` or `delete-dataset` removes them.
 
 **Checks before the build:**
 

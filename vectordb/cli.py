@@ -35,7 +35,7 @@ def load_backend_config():
 # a traceback. Anything else is a bug and keeps its traceback.
 EXPECTED_ERRORS = (
     NotAvailableOnParquet,  # a CSV-path command on a parquet index
-    IndexExists,            # a build over an index that is already there
+    IndexExists,            # a build over an index or a CSV dataset already there
     NoIndex,                # a query on a dataset with nothing to search
     QueryMismatch,          # a query the index cannot answer as it stands
     PlanError,              # a plan the declared sources cannot support
@@ -106,7 +106,7 @@ def _run():
     init_parser.add_argument("source", help="CSV file with vectors; with --format parquet, a parquet file, a directory of parquet files, or an s3:// URI (a prefix only when it ends with '/')")
     init_parser.add_argument("--format", choices=("csv", "parquet"), default="csv", help="Source format (default: csv). parquet builds an immutable index: no csv_blocks, no auto-indexer; features, num_index and k must be declared in the config")
     init_parser.add_argument("--config", required=True, help="Path to index config JSON")
-    init_parser.add_argument("--replace", action="store_true", help="With --format parquet: delete an existing index of the same name and build again")
+    init_parser.add_argument("--replace", action="store_true", help="With --format parquet: delete an existing parquet index of the same name and build again (a CSV dataset of that name is removed with delete-dataset first)")
     init_parser.add_argument("--files", default=None, help="With --format parquet: shell pattern for the file names read from a directory or s3:// prefix (default: *.parquet); '*_embeddings.parquet' skips the records files the Open Web Index publishes beside its embeddings")
     init_parser.add_argument("--workers", type=int, default=None, help="Number of indexing workers (default: 16; CSV builds only)")
     init_parser.add_argument("--no-update-threshold", action="store_true", help="Skip auto-update threshold after indexing (CSV builds only)")

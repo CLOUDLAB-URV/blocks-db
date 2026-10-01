@@ -227,7 +227,7 @@ Builds an immutable index from parquet files. The files of one build share one o
 
 1. **Expand** (CLI): `expand_sources()` turns the source into a sorted list of files: a directory gives the files under it, at any depth, whose name matches `--files` (default `*.parquet`), an `s3://` URI ending in `/` gives the matching keys under that prefix, and any other source is one file
 2. **Plan**: `prepare_build()` reads the file footers, skips files with no rows and splits the rows into exactly `num_index` contiguous blocks; the id of a vector is the position of its row across the files
-3. **Check**: before anything is seeded, deleted or uploaded, the build stops when the name already holds an index and `--replace` is not given, when the largest block does not fit the disk of a function (`aws_lambda.ephemeral_storage` in the Lithops configuration, 512 MB unless set), or when the arguments sent to the functions exceed `lithops.data_limit` (4 MiB unless set)
+3. **Check**: before anything is seeded, deleted or uploaded, the build stops when the name holds a CSV dataset (`datasets/{name}/source.csv` or `pending/{name}/`), when it already holds an index and `--replace` is not given, when the largest block does not fit the disk of a function (`aws_lambda.ephemeral_storage` in the Lithops configuration, 512 MB unless set), or when the arguments sent to the functions exceed `lithops.data_limit` (4 MiB unless set)
 4. **Seed**: sets `{dataset}_ID_TRACKER` in DynamoDB to the number of source rows; a failed write stops the build
 5. **Replace** (`--replace`): deletes the previous index under `indexes/{name}/blocks/`
 6. **Upload**: local files are uploaded to `datasets/{name}/source/{path below their common root}`; `s3://` sources are read in place
