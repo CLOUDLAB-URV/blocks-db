@@ -194,6 +194,21 @@ blocks-db setup --bucket your-bucket --skip-vector-table --skip-runtime
 
 > **Warning:** Ensure these resources do not already exist, or the setup will fail or update existing resources.
 
+**Rebuild the runtime:**
+
+The runtime image holds a copy of the `vectordb` package and its dependencies, `pyarrow` among them. When the package changes, build the image again and delete the deployed functions, which are created from the new image on next use:
+
+```bash
+# From the repository root: build the image and push it to ECR. Lambda refuses an
+# image that carries the attestation manifests Docker adds by default, so turn them off
+BUILDX_NO_DEFAULT_ATTESTATIONS=1 lithops runtime build -f vectordb/infra/Dockerfile.lambda -b aws_lambda blocks-db-runtime
+
+# Delete the deployed functions
+lithops runtime delete blocks-db-runtime -b aws_lambda
+```
+
+`blocks-db-runtime` is the name `setup` uses unless `--runtime-name` sets another. A new name works too: build under it and set it as `runtime` in the `aws_lambda` section of the Lithops configuration (`~/.lithops/config`, written by `setup`).
+
 ### Initialize database
 
 ```bash
@@ -266,6 +281,78 @@ blocks-db initialize-database mydataset vectors.csv --config config.json --skip-
 ```
 
 After initializing, the threshold is automatically configured based on the initial config (num_index, features) and estimated vector size. This threshold controls the size of each block for auto-indexing — the system tries to get as close as possible to this size.
+
+**From parquet files:**
+
+```bash
+# One file
+blocks-db initialize-database mydata vectors.parquet --format parquet --config config.json
+
+# Every *.parquet file under a directory, at any depth
+blocks-db initialize-database mydata /path/to/parquet --format parquet --config config.json
+
+# Every *.parquet object under an S3 prefix (without the final "/", the URI is one object)
+blocks-db initialize-database mydata s3://my-bucket/path/to/parquet/ --format parquet --config config.json
+```
+
+The files must use one of the layouts in [Parquet vectors](#parquet-vectors). Local files are uploaded to the bucket under `datasets/<dataset>/source/`, and `delete-dataset` removes them; `s3://` files are read in place and left untouched.
+
+Example (`config.json`):
+
+```json
+{
+  "features": 1024,
+  "num_index": 16,
+  "k": 512,
+  "n_probe": 32,
+
+  "index_mem": 10240,
+  "search_map_mem": 8192,
+  "search_reduce_mem": 2048
+}
+```
+
+`features`, `num_index` and `k` are required. When `k` is missing, the error suggests a value from the rows of the smallest block: 4·√rows, at most rows / 39.
+
+**Parquet options:**
+
+```bash
+# Under a directory or an S3 prefix, read only the files whose name matches a shell pattern (default: *.parquet)
+blocks-db initialize-database mydata /path/to/parquet --format parquet --config config.json --files '*_embeddings.parquet'
+
+# Delete the index already stored under this name, then build
+blocks-db initialize-database mydata /path/to/parquet --format parquet --config config.json --replace
+```
+
+`--workers`, `--build-local`, `--csv-block-size`, `--skip-auto-indexer` and `--no-update-threshold` belong to a CSV build and are refused with `--format parquet`; `--files` and `--replace` are refused without it.
+
+Without `--replace`, a name that already holds an index is refused. A build that fails or is interrupted while its functions run removes the blocks written so far; with `--replace`, the previous index is already deleted by then. Functions still running on AWS Lambda finish and may write their blocks afterwards; `--replace` or `delete-dataset` removes them.
+
+**Checks before the build:**
+
+The build plans exactly `num_index` blocks from the file footers and runs one function per block. It checks the plan before it deletes, uploads or writes anything, and two of the checks depend on the Lithops configuration:
+
+- The largest block must fit the disk of a function: on AWS Lambda, `ephemeral_storage` in the `aws_lambda` section (in MB: 512 unless set, at most 10240). Raise it, or raise `num_index`. A function keeps the size it was created with, so after a change delete the runtime (`lithops runtime delete <runtime-name> -b aws_lambda`).
+- The arguments of all the build tasks, together, must stay under `data_limit` in the `lithops` section (in MiB: 4 unless set). Raise it, or build from fewer files.
+
+The first write of the build is the id counter of the dataset in the DynamoDB table; if the table refuses it, the build stops there. The functions run the `vectordb` package of the runtime image, so rebuild the image before the first parquet build on an existing setup (see **Rebuild the runtime** above).
+
+**What a parquet index does not support:**
+
+An index built from parquet is immutable and has no tags. These stop with an error that says why:
+
+- `put`
+- `get` by id or with `--limit`
+- `get-by-tags`
+- `query --filter`
+- `initialize-database` without `--format parquet` over the same name
+- `reindex_pending()` in the Python client
+
+To go from a result id to its source record, use `provenance()` in the Python client (see [Python Client](#-python-client)):
+
+```python
+client.provenance("mydata", [12, 4096])   # {12: ("doc-3", 1), 4096: ("doc-987", 0)}
+```
 
 ### Add more vectors
 
@@ -373,9 +460,9 @@ blocks-db status mydataset
 blocks-db status mydataset -v
 ```
 
-For an index built from parquet, `status` shows the vectors the build kept
-and the rows it rejected, from the saved configuration; such an index has no
-pending vectors.
+For an index built from parquet, `status` shows the source format, the
+vectors kept and the rows rejected, with no pending section; `-v` adds the
+number of blocks and source files.
 
 ---
 
@@ -387,7 +474,7 @@ pending vectors.
 | `configure` | Save default bucket, region and DynamoDB table | `blocks-db configure --bucket <b> --region <r> [--sqs] [--table-name <t>]` |
 | `refresh-credentials` | Refresh AWS credentials in Lithops config | `blocks-db refresh-credentials` |
 | `update-threshold` | Update auto-indexer block size threshold | `blocks-db update-threshold [bytes] --dataset <name>` |
-| `initialize-database` | Upload dataset and build initial index | `blocks-db initialize-database <n> <csv> --config <j> [--build-local]` |
+| `initialize-database` | Build the initial index from CSV or parquet | `blocks-db initialize-database <n> <src> --config <j> [--build-local \| --format parquet [--files <p>] [--replace]]` |
 | `put` | Add vectors to pending storage | `blocks-db put <name> <csv> [--tags <json>] [--single]` |
 | `query` | Search vectors (indexed + pending by default) | `blocks-db query <n> --file <csv> --k <N> [--filter <j>] [--filter-mode post\|pre] [--batch-size <N>]` |
 | `status` | Show dataset status and index info | `blocks-db status <name> [-v]` |
@@ -411,84 +498,6 @@ blocks-db get mydataset --pending
 ---
 
 ## 📄 File Formats
-
-### Parquet vectors (`--format parquet`)
-
-An index can be built straight from parquet files, without converting them to
-CSV first:
-
-```bash
-blocks-db initialize-database mydata /path/to/day --format parquet --config config.json
-blocks-db initialize-database mydata s3://my-bucket/day/ --format parquet --config config.json
-```
-
-The source may be one file, a directory (every `*.parquet` under it, at any
-depth) or an `s3://` prefix. `--files` narrows a directory or a prefix to the
-file names matching a shell pattern. A day of the Open Web Index needs it: each
-language directory keeps a `_records` file beside its `_embeddings` file, and a
-build refuses a file that holds no vectors, naming it:
-
-```bash
-blocks-db initialize-database owi-day /data/owi/day --format parquet \
-  --files '*_embeddings.parquet' --config config.json
-```
-
-Two column layouts are recognized:
-
-| Dialect | Columns |
-|---------|---------|
-| canonical | `id` (int64), `vector` (list of float); any other column is ignored |
-| owi-v2 | `record_id` (string), `chunk_idx` (int), `embedding` (list of float16) |
-
-owi-v2 embeddings are published at unit length and stored in float16, which
-moves them slightly off it. The reader scales each vector back to length 1,
-so the index ranks exactly like the cosine. For a query at unit length, a
-returned distance is 2 − 2·cosine. A row that cannot be scaled (all zeros, or
-a non-finite value) is rejected like a row of the wrong length. The
-configuration saved with the index (`indexes/{dataset}/{impl}/config.json`)
-records `unit_norm: true`. Canonical vectors are indexed as written.
-
-The index configuration must declare `features` (the vector dimension),
-`num_index` and `k`; the build refuses to start otherwise, and the error
-suggests a `k` for the smallest block: 4·√rows, with the largest value FAISS
-trains beside it. The blocks are planned from the file footers, so their
-number is exactly `num_index` whatever the worker count, and every vector
-gets a dense positional id. Each function receives the row ranges of its
-block; when the ranges of all the blocks weigh more than Lithops sends to
-the functions (`data_limit` in the `lithops` section of its configuration,
-4 MiB by default), the build refuses to start before it deletes or uploads
-anything. Raise `data_limit`, or build from fewer files.
-
-Each function writes its block to its own disk before uploading it, so the
-largest block must fit there. On AWS Lambda that disk is the
-`ephemeral_storage` of the `aws_lambda` section of the Lithops configuration
-(512 MB unless set, up to 10240), applied when the runtime is deployed; a
-plan whose largest block does not fit is refused before anything is
-uploaded or deleted. A function already deployed keeps its size: after
-raising the setting, delete the runtime and deploy it again, or use more
-blocks.
-
-What a parquet build does **not** do, by design: no CSV byte-offset blocks,
-no auto-indexer state, no tags. The options of a CSV build (`--workers`,
-`--build-local`, `--csv-block-size`, `--skip-auto-indexer`,
-`--no-update-threshold`) are refused with `--format parquet`, as `--replace`
-and `--files` are without it. The index is immutable; rebuild it to change
-it. A build refuses a name that already holds an index; `--replace` deletes
-that index first. The commands that need what it lacks stop with an error
-that says so:
-`put` (added vectors would reuse its positional ids), `get` by id or with
-`--limit`, `get-by-tags`, `query --filter`, and `reindex_pending()`, which
-would otherwise delete the blocks before failing. To go from a result id to
-its source record, use `provenance()`. `delete-dataset` also removes the
-copies a build uploaded from local files; a source read in place from
-`s3://` is left untouched.
-
-Provenance is kept beside the blocks in `indexes/{dataset}/{impl}/idmap/`, so a
-result id maps back to the publisher's record:
-
-```python
-client.provenance("mydata", [12, 4096])   # {12: ("doc-3", 1), 4096: ("doc-987", 0)}
-```
 
 ### Vectors CSV
 
@@ -525,6 +534,46 @@ spaces, with no ID.
 0.1 0.2 0.3 ...
 0.4 0.5 0.6 ...
 ```
+
+### Parquet vectors
+
+A parquet build recognizes two column layouts by their column names; any
+other column is ignored:
+
+| Layout | Columns |
+|--------|---------|
+| canonical | `vector` (list of numbers), optional `id` (integer) |
+| owi-v2 | `record_id` (string), `chunk_idx` (integer), `embedding` (list of float16) |
+
+owi-v2 is the layout of the embeddings files the Open Web Index publishes. The
+records files published beside them hold no vectors, so a directory of both is
+built with `--files '*_embeddings.parquet'`.
+
+All the files of a build must use the same layout, and the dimension of each
+file (from its schema, or from its first vector) must be `features`. A row
+whose vector has another length, or no vector, is rejected, and so is an
+owi-v2 row that cannot be scaled to unit length (all zeros, or a non-finite
+value).
+
+A file with no rows is skipped. A file with rows whose columns match neither
+layout, or both, stops the build with an error that names it. The
+configuration saved with the index (`indexes/<dataset>/blocks/config.json`)
+counts the rejected rows in `rejected` and the skipped files in
+`source_files_skipped`.
+
+The id of a vector in the index is the position of its row, counted from 0
+across the files in sorted path order, whatever the `id` column of a canonical
+file holds; rejected rows leave gaps in the ids.
+
+`provenance()` maps an id back to `(record_id, chunk_idx)`: for an owi-v2 row,
+its own columns; for a canonical row, its `id` as text (the index id when the
+file has no `id` column) and 0.
+
+owi-v2 vectors are scaled to unit length when read, and the saved
+configuration records `unit_norm: true`: for a unit-length query, the
+returned distance is 2 − 2·cosine. Canonical vectors are indexed as written, so
+their values must be finite: a NaN or infinite value makes FAISS refuse to
+train its block, and the build fails.
 
 ---
 
