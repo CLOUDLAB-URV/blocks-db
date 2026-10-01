@@ -11,7 +11,7 @@ CLI (cli.py)
 ```
 
 `cli.py` parses CLI args and delegates to `VectorDBClient`.
-`client.py` manages datasets (put, status, delete) and wraps both indexing (`index_dataset`) and search (`query`).
+`client.py` manages datasets (put, status, delete) and wraps both indexing (`index_dataset`, `index_parquet_dataset`) and search (`query`).
 `serverless_vectordb.py` bridges client calls to the Lithops `FunctionExecutor` — it handles serialization, function dispatch, and result collection.
 `indexing/indexator.py` and `orchestration/orchestrator.py` contain the actual map/reduce logic.
 
@@ -35,7 +35,7 @@ CLI (cli.py)
 | `indexing/` | Indexing pipeline orchestration |
 | `orchestration/` | Distributed map/reduce search |
 | `infra/` | AWS infrastructure provisioning |
-| `utils/` | S3, DynamoDB, CSV, hybrid search utilities |
+| `utils/` | S3, DynamoDB, CSV, parquet, hybrid search utilities |
 
 ---
 
@@ -53,8 +53,10 @@ your-bucket/
 │   ├── config.json
 │   ├── centroid_*.ann                 # FAISS index blocks
 │   ├── centroid_*_tags.json           # Per-vector tags (forward index)
-│   └── centroid_*_reverse_tags.json   # Reverse index for pre-filter mode
+│   ├── centroid_*_reverse_tags.json   # Reverse index for pre-filter mode
+│   └── idmap/block_*.parquet          # Parquet builds: id, record_id, chunk_idx of each vector
 ├── datasets/<dataset>/source.csv      # Alternative dataset path
+├── datasets/<dataset>/source/         # Parquet builds: uploaded copies of local source files
 └── inputs/                            # Temporary Lithops data
 ```
 
@@ -77,7 +79,7 @@ vectordb/
 ├── indexing/           # Indexing pipeline orchestration via Lithops
 ├── orchestration/      # Distributed map/reduce search
 ├── infra/              # AWS provisioning (setup.py), Lambda code, Dockerfiles
-└── utils/              # S3, DynamoDB, CSV, hybrid search, tracking utilities
+└── utils/              # S3, DynamoDB, CSV, parquet, hybrid search, tracking utilities
 ```
 
 Each subdirectory contains a README.md detailing its files:
@@ -219,6 +221,24 @@ The full index build via Lithops, used for initial dataset ingestion.
    - Optionally updates Lambda threshold
 6. **Tracked vectors** are marked as indexed (not pending)
 
+### Parquet Indexing Pipeline (`--format parquet`)
+
+Builds an immutable index from parquet files. The files of one build share one of two column layouts, `canonical` (`vector`, optional `id`) or `owi-v2` (`record_id`, `chunk_idx`, `embedding`); any other column is ignored.
+
+1. **Expand** (CLI): `expand_sources()` turns the source into a sorted list of files: a directory gives the files under it, at any depth, whose name matches `--files` (default `*.parquet`), an `s3://` URI ending in `/` gives the matching keys under that prefix, and any other source is one file
+2. **Plan**: `prepare_build()` reads the file footers, skips files with no rows and splits the rows into exactly `num_index` contiguous blocks; the id of a vector is the position of its row across the files
+3. **Check**: before anything is seeded, deleted or uploaded, the build stops when the name already holds an index and `--replace` is not given, when the largest block does not fit the disk of a function (`aws_lambda.ephemeral_storage` in the Lithops configuration, 512 MB unless set), or when the arguments sent to the functions exceed `lithops.data_limit` (4 MiB unless set)
+4. **Seed**: sets `{dataset}_ID_TRACKER` in DynamoDB to the number of source rows; a failed write stops the build
+5. **Replace** (`--replace`): deletes the previous index under `indexes/{name}/blocks/`
+6. **Upload**: local files are uploaded to `datasets/{name}/source/{path below their common root}`; `s3://` sources are read in place
+7. **Build** (Lithops map, one `build_block_from_parquet` function per block):
+   - Reads the row ranges of its block into float32 vectors and scales `owi-v2` vectors to unit length
+   - Rejects rows with no vector or a vector of the wrong length, and `owi-v2` rows that cannot be scaled (all zeros, or a non-finite value)
+   - Fails with `BlockTooSmall` when fewer rows than `k` are left
+   - Trains and fills a FAISS IVF index and uploads it as `centroid_{i}.ann`, with its id map part `idmap/block_{i}.parquet`
+   - When a function fails or the client is interrupted, the client removes the blocks written so far; functions still running may write theirs afterwards, and `--replace` or `delete-dataset` removes them
+8. **Save**: writes `config.json` with the index parameters plus `source_format` (`parquet`), `source_keys`, `source_rows` (rows in the footers), `num_vectors` (vectors kept), `rejected`, `unit_norm` (`true` for `owi-v2`), `source_files_skipped` (files with no rows) and `block_ranges` (first and last id of each block)
+
 ### Lithops Search Pipeline
 
 1. **Upload queries**: Queries are serialized as JSON and uploaded to `queries/testdata/{uuid}_queries_{dataset}_{num_index}.csv`
@@ -244,3 +264,7 @@ The full index build via Lithops, used for initial dataset ingestion.
 - **A function that dies before it reports a start** (a broken runtime, a handler that fails) is not seen by Lithops' timeout, which ends only functions that started. The client gives up on it when no function has started or finished for the backend's `runtime_timeout` + 60 s (`lithops.execution_timeout` + 60 s on a backend without one, such as localhost) (`FunctionsTimedOut`); functions that keep starting or finishing, however slowly, keep the wait alive. `wait_timeout=0` on the client waits forever.
 - **The functions run the `vectordb` of the runtime image**: Lithops sends with a job only the modules the image does not have, and the image installs the package. A change under `vectordb/` reaches the functions once the image is built again from the repository root (`BUILDX_NO_DEFAULT_ATTESTATIONS=1 lithops runtime build -f vectordb/infra/Dockerfile.lambda -b aws_lambda <runtime-name>`; Lambda refuses an image that carries the attestation manifests Docker adds by default) and the deployed functions are deleted (`lithops runtime delete <runtime-name> -b aws_lambda`), or under a new runtime name. `setup` builds the image the same way, so export `BUILDX_NO_DEFAULT_ATTESTATIONS=1` before `blocks-db setup` too.
 - **Pending tracking during auto-index**: after the Lambda processes pending files, they are deleted from S3 and their DDB tracking items are removed. The status command will show no pending vectors.
+- **Parquet ids are row positions**: the id of a vector, and of a query result, is the position of its row across the source files in sorted path order, not the `id` or `record_id` the file gives it. Rejected rows leave gaps in the ids. `provenance()` maps an id to `(record_id, chunk_idx)`; for a `canonical` file, that is the file's `id` as text (the index id when the file has none) and `0`.
+- **Parquet indexes are immutable**: they have no pending vectors, no auto-indexer and no tags. `put`, `get` by id or with `--limit`, `get-by-tags`, `query --filter`, `reindex_pending()` and a CSV build over the same name stop with `NotAvailableOnParquet`. To change the index, build it again with `--format parquet --replace`.
+- **Parquet index config**: `features`, `num_index` and `k` must be declared. Without `k`, the error suggests a value for the smallest block.
+- **Function image for parquet builds**: the functions of a parquet build import pyarrow and `vectordb.utils.parquet`, so the runtime image must hold both. Build it from the repository root with `BUILDX_NO_DEFAULT_ATTESTATIONS=1 lithops runtime build -f vectordb/infra/Dockerfile.lambda -b aws_lambda <runtime-name>` (Lambda refuses an image that carries the attestation manifests Docker adds by default), then run `lithops runtime delete <runtime-name> -b aws_lambda` so the functions are created again from the new image, or build it under a new runtime name and set that name in the Lithops configuration. A new `ephemeral_storage` applies the same way: a deployed function keeps its size until it is deleted and created again.
