@@ -645,7 +645,7 @@ class VectorDBClient:
         """
 
         if not vectors:
-            raise ValueError("No query vectors provided.")
+            raise QueryMismatch("No query vectors provided.")
 
         vectors_np = np.array(vectors)
         
@@ -675,6 +675,8 @@ class VectorDBClient:
             vecs = vectors
         else:
             raise ValueError("Provide either vector or vectors")
+        if not len(vecs):
+            raise QueryMismatch("No query vectors provided.")
         
         return self._query_indexed_only(dataset_name, np.array(vecs), k, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
 
@@ -790,7 +792,7 @@ class VectorDBClient:
                 vectors.append(vec)
 
         if not vectors:
-            raise ValueError("No valid vectors found in CSV.")
+            raise QueryMismatch("No valid vectors found in CSV.")
 
         vectors_np = np.array(vectors)
         

@@ -45,6 +45,27 @@ def client_with(monkeypatch, indexes, pending=(), search=None):
     return client
 
 
+class TestAnEmptyQuery:
+    """Every way of asking refuses an empty batch the same way."""
+
+    def test_an_empty_list_of_vectors_is_refused(self, monkeypatch):
+        client = client_with(monkeypatch, indexes=[("blocks", 4)])
+        with pytest.raises(QueryMismatch, match="No query vectors provided"):
+            client.query_batch("ds", [])
+
+    def test_an_empty_indexed_only_query_is_refused_before_the_index_is_read(self, monkeypatch):
+        client = client_with(monkeypatch, indexes=[])
+        with pytest.raises(QueryMismatch, match="No query vectors provided"):
+            client.query_indexed_only("ds", vectors=[])
+
+    def test_a_query_file_without_vectors_is_refused(self, tmp_path, monkeypatch):
+        client = client_with(monkeypatch, indexes=[("blocks", 4)])
+        empty = tmp_path / "queries.csv"
+        empty.write_text("\n")
+        with pytest.raises(QueryMismatch, match="No valid vectors found in CSV"):
+            client.query_from_file("ds", str(empty))
+
+
 class TestADatasetWithNothingToSearch:
     def test_a_query_without_an_index_says_so_instead_of_answering_nothing(self, monkeypatch):
         # empty results and exit code 0 read like "no neighbours found"
@@ -86,6 +107,26 @@ class TestASearchThatFailsIsNotAnEmptyAnswer:
 
 
 class TestTheCommandLine:
+    def test_an_empty_query_file_ends_with_the_reason(self, tmp_path, monkeypatch):
+        from vectordb import cli
+
+        class EmptyFileClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def query_from_file(self, *args, **kwargs):
+                return client_with(monkeypatch, indexes=[("blocks", 4)]).query_from_file(*args, **kwargs)
+
+        empty = tmp_path / "queries.csv"
+        empty.write_text("\n")
+        monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "backend_config.json")
+        monkeypatch.setattr(cli, "VectorDBClient", EmptyFileClient)
+        monkeypatch.setattr("sys.argv", ["blocks-db", "--bucket", "b", "query", "ds", "--file", str(empty)])
+        with pytest.raises(SystemExit) as stopped:
+            cli.main()
+        assert str(stopped.value.code) == "Error: No valid vectors found in CSV."
+
     def test_a_query_with_nothing_to_search_ends_with_the_reason(self, tmp_path, monkeypatch):
         # before, the command printed nothing and exited with 0
         from vectordb import cli
