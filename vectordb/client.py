@@ -35,7 +35,7 @@ BLOCK_SIZE = 500000  # ~500KB per block for CSV blocks
 class NoIndex(ValueError):
     """A query asked for a dataset that has no index to search.
 
-    A ValueError still, so callers that caught the old one keep working."""
+    It is a ValueError, so code that catches ValueError catches it too."""
 
 
 class QueryMismatch(ValueError):
@@ -751,7 +751,7 @@ class VectorDBClient:
         if not results:
             if no_index is not None:
                 # nothing was searched: saying so beats an empty answer that
-                # reads like "no neighbours"
+                # reads like "no neighbors"
                 raise no_index
             results = [[] for _ in range(len(vectors_np))]
 

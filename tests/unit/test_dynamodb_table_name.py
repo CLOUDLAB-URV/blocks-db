@@ -135,8 +135,8 @@ class TestCli:
         }
 
     def test_the_global_flag_also_reaches_configure_and_setup(self, cli_env, monkeypatch):
-        # a subparser with its own --table-name and a default of None used to
-        # overwrite the value given before the command name
+        # a subcommand --table-name that is not given must not overwrite the
+        # value given before the command name
         config_file, _ = cli_env
         self.run(monkeypatch, "--table-name", "team-table", "configure", "--bucket", "b")
         assert json.loads(config_file.read_text())["dynamodb_table_name"] == "team-table"

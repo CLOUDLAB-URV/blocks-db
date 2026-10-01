@@ -109,8 +109,8 @@ class TestATagFilterReadsTheTagsOfTheBlockItSearched:
 
 class TestEachTaskOwnsItsFiles:
     def test_two_searches_never_share_a_local_path(self, two_cluster_block):
-        # two map tasks on one filesystem used to overwrite and delete
-        # /tmp/index_0.ann under each other
+        # two map tasks on one filesystem must not share a local block path
+        # such as /tmp/index_0.ann
         storage, _ = two_cluster_block
         search(storage, params())
         search(storage, params())

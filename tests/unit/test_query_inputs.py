@@ -1,5 +1,5 @@
 """What a query is allowed to ask, and what happens when there is nothing to
-search: both used to be found out inside the functions, or not at all."""
+search: both are decided before any function runs."""
 
 from types import SimpleNamespace
 
@@ -68,7 +68,7 @@ class TestAnEmptyQuery:
 
 class TestADatasetWithNothingToSearch:
     def test_a_query_without_an_index_says_so_instead_of_answering_nothing(self, monkeypatch):
-        # empty results and exit code 0 read like "no neighbours found"
+        # empty results and exit code 0 read like "no neighbors found"
         client = client_with(monkeypatch, indexes=[])
         with pytest.raises(NoIndex, match="No index found for dataset 'ds'"):
             client.query_batch("ds", [[0.0, 1.0]], k=1)
@@ -86,8 +86,8 @@ class TestADatasetWithNothingToSearch:
 
 class TestASearchThatFailsIsNotAnEmptyAnswer:
     def test_the_error_of_the_search_reaches_the_caller(self, monkeypatch):
-        # the catch used to cover the search as well, so a failure inside the
-        # functions came back as "no index available" and no results
+        # a failure inside the functions is not "no index available":
+        # only the lookup of the index is caught
         def explode(*args, **kwargs):
             raise ValueError("the block could not be read")
 
@@ -128,7 +128,6 @@ class TestTheCommandLine:
         assert str(stopped.value.code) == "Error: No valid vectors found in CSV."
 
     def test_a_query_with_nothing_to_search_ends_with_the_reason(self, tmp_path, monkeypatch):
-        # before, the command printed nothing and exited with 0
         from vectordb import cli
 
         class RefusingClient:
