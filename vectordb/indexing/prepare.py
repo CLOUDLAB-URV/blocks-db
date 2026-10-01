@@ -8,8 +8,7 @@ and the block count. Everything a query later needs comes from that
 sealed ``config.json``; nothing is probed afterwards.
 
 Nothing here uploads, writes or invokes a function; it only reads the
-sources, over the network when they are on S3. A build that cannot
-succeed must fail here, before anything is uploaded or run.
+sources, over the network when they are on S3.
 """
 
 from __future__ import annotations
@@ -37,15 +36,13 @@ def expand_sources(
     """The files a declared source stands for, in sorted order.
 
     A local directory means the files under it, at any depth, whose name
-    matches ``files``, because the publisher partitions a day into
-    ``year=/month=/day=/language=`` directories; an ``s3://`` URI ending
-    in ``/`` means the matching keys under that prefix, listed once
-    through ``list_s3(bucket, prefix)``; anything else is one file, taken
-    as declared.
+    matches ``files``; an ``s3://`` URI ending in ``/`` means the matching
+    keys under that prefix, listed once through ``list_s3(bucket, prefix)``;
+    anything else is one file.
 
-    ``files`` is a shell pattern on the file name. A day of the Open Web
-    Index keeps a ``_records`` file beside every ``_embeddings`` file, and
-    only the embeddings are vector sources: ``*_embeddings.parquet``.
+    ``files`` is a shell pattern on the file name, such as
+    ``*_embeddings.parquet`` to leave out other parquet files kept beside
+    the vector files.
     """
     if source.startswith("s3://"):
         if not source.endswith("/"):
@@ -72,6 +69,7 @@ def expand_sources(
 
 
 def prepare_build(sources: Sequence[str], config: dict) -> tuple[Plan, dict]:
+    """Returns (plan, config to save): the planned blocks and the sealed configuration."""
     if not sources:
         raise PlanError("no sources declared")
     repeated = [uri for uri in set(sources) if list(sources).count(uri) > 1]
@@ -103,14 +101,14 @@ def prepare_build(sources: Sequence[str], config: dict) -> tuple[Plan, dict]:
         try:
             files.append(inspect(uri))
         except EmptyParquetFile:
-            # the publisher writes a schema-only file when an input
-            # produced no chunks; it contributes nothing to a build
+            # a file with no rows adds nothing to the build; it is counted
+            # in source_files_skipped
             empty += 1
     if not files:
         raise PlanError(f"every declared source is empty ({empty} files)")
     if "k" not in config:
-        # the dataclass default (4096 lists) would make FAISS refuse to
-        # train small blocks; a parquet build declares its list count
+        # the default k of 4096 lists is more than a small block can train,
+        # so a parquet build declares its list count
         draft = plan(files, num_index, features=features)
         raise PlanError(
             "k (IVF lists per block) must be declared; the smallest block"

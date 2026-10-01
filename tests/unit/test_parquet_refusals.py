@@ -162,7 +162,7 @@ class TestClient:
 class TestWhatTheCheckCosts:
     @pytest.mark.parametrize("source_format", ["csv", None])
     def test_a_loop_of_puts_and_a_read_ask_s3_once(self, monkeypatch, source_format):
-        # before, every call listed the whole index prefix and read each config
+        # the check must not list the index prefix or read a config on every call
         client = client_for(monkeypatch, source_format)
         client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
         monkeypatch.setattr(client_module, "load_index_config", lambda *args: pytest.fail("a config was read"))
@@ -262,7 +262,7 @@ def test_deleting_a_dataset_removes_the_parquet_copies_it_uploaded(monkeypatch):
         "datasets/ds/source/year=2026/language=spa/metadata_0_embeddings.parquet",
         "datasets/ds/source/year=2026/language=deu/metadata_0_embeddings.parquet",
         "datasets/ds-2/source/metadata_0_embeddings.parquet",  # another dataset
-        "owi/spa/metadata_0_embeddings.parquet",  # a source read in place
+        "shared/vectors/metadata_0_embeddings.parquet",  # a source read in place
     ])
     monkeypatch.setattr(dataset_ops, "s3", bucket)
     monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: None)
@@ -270,7 +270,7 @@ def test_deleting_a_dataset_removes_the_parquet_copies_it_uploaded(monkeypatch):
     dataset_ops.delete_dataset("bucket", "ds")
     assert bucket.keys == {
         "datasets/ds-2/source/metadata_0_embeddings.parquet",
-        "owi/spa/metadata_0_embeddings.parquet",
+        "shared/vectors/metadata_0_embeddings.parquet",
     }
 
 

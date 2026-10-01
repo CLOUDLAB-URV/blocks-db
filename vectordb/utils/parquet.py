@@ -6,7 +6,7 @@ Two dialects are recognized by their column names:
   (integer), the parquet twin of the CSV rows. Any other column is
   ignored.
 - ``owi-v2``: ``record_id`` (string), ``chunk_idx`` (integer) and
-  ``embedding`` (list of float16) — the Open Web Index embeddings files
+  ``embedding`` (list of float16): the Open Web Index embeddings files
   as published, consumed without conversion.
 
 :func:`inspect` reads the footer of a file and, when the schema does
@@ -24,10 +24,9 @@ In both dialects the id of a vector in the index is the position of its
 row in the plan; the file's own id (``id`` or ``record_id``) is kept as
 provenance and returned by ``VectorDBClient.provenance()``.
 
-Sources are named by URI: ``s3://bucket/key`` or a local path. The S3
-filesystem is built once per process from ``AWS_REGION`` when it is set,
-so a function does not resolve the bucket's region over the network on
-every open.
+Sources are named by URI: ``s3://bucket/key`` or a local path. One S3
+filesystem is built per bucket and process, in the region of
+``AWS_REGION`` or ``AWS_DEFAULT_REGION`` when either is set.
 """
 
 from __future__ import annotations
@@ -58,8 +57,7 @@ class ParquetSourceError(ValueError):
 
 
 class EmptyParquetFile(ParquetSourceError):
-    """A file with no rows. The publisher writes these when an input
-    produced no chunks, so a caller may skip them instead of failing."""
+    """A file with no rows, which a caller may skip instead of failing."""
 
 
 @dataclass(frozen=True)
@@ -135,7 +133,7 @@ def _open(uri: str):
     try:
         handle = filesystem.open_input_file(path)
         # pre_buffer coalesces the column chunks of a read into few large
-        # requests, which is what makes an object store affordable
+        # requests
         return handle, pq.ParquetFile(handle, pre_buffer=True)
     except (pa.ArrowException, OSError, ValueError) as error:
         raise ParquetSourceError(f"{uri}: cannot read ({error})") from None
@@ -203,9 +201,7 @@ def iter_ranges(uri: str, dimension: int, ranges):
     """Decode several ``(row_group, start, end)`` ranges of one file.
 
     The file is opened once, and consecutive whole row groups are read in
-    one call: the OWI files hold hundreds of ~40-row groups, so a block
-    that read them one by one would be thousands of sequential requests.
-    Yields one :class:`Rows` per requested range, in order.
+    one call. Yields one :class:`Rows` per requested range, in order.
     """
     handle, reader = _open(uri)
     try:
@@ -304,8 +300,8 @@ def _decode(uri, dialect, dimension, table, row_group, start, end) -> Rows:
             rejected=rejected,
             ids=_integers(uri, kept, "id") if "id" in kept.column_names else None,
         )
-    # the OWI publishes unit vectors, and float16 storage moves them off
-    # length 1; scaled back, L2 ranks exactly like the cosine
+    # scaled to unit length, the L2 distance ranks like the cosine; a
+    # vector with a zero or non-finite norm cannot be scaled and is rejected
     norms = np.linalg.norm(vectors, axis=1)
     scalable = np.isfinite(norms) & (norms > 0)
     if not scalable.all():

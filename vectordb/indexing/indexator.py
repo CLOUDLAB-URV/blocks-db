@@ -102,10 +102,8 @@ def initialize_database(filename, params, fexec, num_workers=16, wait_timeout=No
 def task_params(params):
     """The parameters every build task carries.
 
-    The plan already names the file and the rows of each block, so the
-    lists of source files and id ranges sealed for config.json stay
-    behind: repeated in every task, they are most of the payload of a
-    build from hundreds of files.
+    The plan names the file and the rows of each block, so the source list
+    and the id ranges sealed for config.json are left out.
     """
     return dataclasses.replace(params, source_keys=None, block_ranges=None)
 
@@ -140,12 +138,11 @@ def check_payload(plan, params, fexec):
 def initialize_from_plan(plan, params, fexec, wait_timeout=None):
     """Build every block of a parquet plan: one task per block.
 
-    The plan already fixes the block count and the ids, so the number of
-    functions is the number of blocks whatever the executor's
-    concurrency; nothing is split by bytes. Returns the indexing timers of
-    the CSV path (there is no distribute phase) plus the per-block reports
-    (rows kept, rows rejected), so a build can be audited from its output
-    alone.
+    The plan fixes the block count and the ids, so the number of functions
+    is the number of blocks whatever the executor's concurrency. Returns the
+    indexing timers of the CSV path (there is no distribute phase), the
+    report of each block (``blocks``) and the totals ``rows`` (vectors kept)
+    and ``rejected``.
     """
     from vectordb.implementations.blocks.initialize import build_block_from_parquet
 

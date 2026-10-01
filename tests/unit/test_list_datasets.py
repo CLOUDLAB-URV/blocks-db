@@ -59,7 +59,7 @@ def test_a_parquet_dataset_read_in_place_is_listed_from_its_configuration():
         "indexes/owi/blocks/centroid_0.ann",
         "indexes/owi/blocks/config.json",
         "indexes/owi/blocks/idmap/block_0.parquet",
-        "owi/day/metadata_0_embeddings.parquet",
+        "shared/day/metadata_0_embeddings.parquet",
     ])
     assert client.list_datasets() == ["owi"]
 

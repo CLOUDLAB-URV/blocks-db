@@ -79,15 +79,14 @@ class SvlessVectorDBParams:
     # DynamoDB connection info (injected at query time)
     dynamodb_region: str = None
 
-    # Source of the build, sealed into config.json by the parquet path:
-    # "csv" is the historical convention datasets/{name}/source.csv.
-    # Every key sealed there must exist here: a query loads config.json
-    # straight into this dataclass.
+    # Source of the build, sealed into config.json by a parquet build
+    # ("csv" for datasets/{name}/source.csv). A query loads config.json
+    # into this dataclass, so every key sealed there is a field here.
     source_format: str = "csv"
     source_keys: Optional[list] = None
     source_rows: int = -1          # rows the source files declared in their footers
-    rejected: int = 0              # rows dropped while reading (malformed vectors)
-    unit_norm: bool = False        # vectors scaled to length 1 on read (owi-v2): distance = 2 - 2 cos
+    rejected: int = 0              # rows rejected while reading (no vector or the wrong length, or an owi-v2 vector that is all zeros or holds a non-finite value)
+    unit_norm: bool = False        # vectors scaled to unit length on read (owi-v2): distance = 2 - 2 cos for a unit-length query
     source_files_skipped: int = 0  # declared files that held no rows
     block_ranges: Optional[list] = None  # [[block, first_id, last_id], ...] for provenance
 

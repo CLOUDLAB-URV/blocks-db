@@ -408,35 +408,37 @@ class VectorDBClient:
         return total_times
     
     def index_parquet_dataset(self, dataset_name: str, sources: List[str], config: dict, save_config: bool = True, replace: bool = False):
-        """Build an immutable index from parquet sources.
+        """
+        Build an immutable index from parquet files.
 
-        Local files are uploaded under ``datasets/{name}/source/``; ``s3://``
-        URIs are read in place. The plan is validated before anything is
-        deleted, seeded, uploaded or invoked, down to the disk of a function
-        and the size of the arguments the functions receive, and the
-        configuration saved is the sealed one: what was read, how many
-        vectors, which dimension, how many blocks. This path never calls
-        ``_get_vector_count``, ``csv_blocks`` or the
-        auto-indexer set-up. Its only DynamoDB write sets the id counter to
-        the number of source rows, so ids handed out from the counter start
-        above the ids of the index; it happens before anything is deleted,
-        uploaded or invoked, and a seed that fails stops the build with the
-        old index intact. A name that already holds an index is refused
-        unless ``replace`` is set, and then the old index is deleted before
-        the new one is built: built beside it, a smaller build would leave
-        old blocks and id map parts to be served with the new ones.
+        The blocks are planned from the file footers and checked against the
+        disk of a function and the argument limit of Lithops before anything
+        is written, deleted, uploaded or invoked. Local files are uploaded
+        under datasets/{dataset_name}/source/; s3:// URIs are read in place.
+        A failed or interrupted build removes the blocks written so far;
+        functions still running may write theirs afterwards. The id of
+        a vector is the position of its row across the files in sorted path
+        order; the file's own id (id or record_id) is kept as record_id and
+        returned by provenance().
 
-        The id of a vector is the position of its row in the plan, in
-        every dialect; the id the file gives it (``id`` or ``record_id``)
-        is kept as ``record_id`` and comes back from :meth:`provenance`.
+        Args:
+            dataset_name: Name of the dataset
+            sources: Parquet files, as local paths or s3:// URIs; expand a directory
+                     or a prefix first with vectordb.indexing.prepare.expand_sources
+            config: Index configuration; must declare features, num_index and k
+            save_config: If True, seeds the id counter in DynamoDB with the number
+                         of source rows and saves the index configuration to S3
+            replace: If True, deletes an existing index of the same name before
+                     building; otherwise a name that holds an index raises IndexExists
 
-        Returns the indexing timers plus ``rows``, ``rejected`` and the
-        per-block reports.
+        Returns:
+            dict: Timing stats from the indexing process, plus rows (vectors kept),
+                  rejected (rows rejected) and blocks (the report of each block)
         """
         # the name is about to hold a parquet index, whatever it held before
         self._no_parquet_index.discard(dataset_name)
         # plan from the footers first: a build that cannot succeed
-        # must not have copied the corpus into the bucket beforehand
+        # must not have uploaded its sources beforehand
         local = [source for source in sources if not source.startswith("s3://")]
         for source in local:
             if not os.path.exists(source):
@@ -450,11 +452,10 @@ class VectorDBClient:
                 " pass replace=True (--replace) to delete it and build again"
             )
 
-        # the key of a local file keeps the path below the common root, so
-        # the metadata_0_embeddings.parquet of two language partitions do
-        # not collide on one key and silently index one twice. The keys
-        # are known before the upload, so the plan is checked with the
-        # URIs the functions will read
+        # the key of a local file keeps its path below the common root, so
+        # two files of the same name in different directories get two keys.
+        # The keys are known before the upload, so the plan is checked with
+        # the URIs the functions will read
         root = os.path.commonpath([os.path.abspath(s) for s in local]) if local else ""
         if local and os.path.isfile(root):
             root = os.path.dirname(root)
@@ -492,10 +493,9 @@ class VectorDBClient:
         try:
             times = sv_vectordb.indexing_from_plan(build_plan)
         except BaseException:
-            # a half-built index must not survive: the blocks that did
-            # finish would otherwise be served under an older config.json.
-            # BaseException, not Exception: an interrupted client (Ctrl-C)
-            # leaves the same half-built index as a failed function
+            # a half-built index must not be left behind. BaseException, not
+            # Exception: an interrupted client (Ctrl-C) leaves the same
+            # half-built index as a failed function
             self._delete_blocks(dataset_name, sealed["implementation"], "the failed build")
             raise
         print(f"Indexing completed: {times['rows']:,} vectors kept, {times['rejected']:,} rows rejected.")
@@ -520,13 +520,20 @@ class VectorDBClient:
             print(f"Removed {len(keys)} objects of {what} under {prefix}")
 
     def provenance(self, dataset_name: str, ids, implementation: str = "blocks") -> dict:
-        """``{id: (record_id, chunk_idx)}`` for parquet-built blocks, read
-        from the ``idmap`` parts the build wrote next to the blocks.
+        """
+        Map vector ids of an index built from parquet to their source records.
 
-        Only the parts whose id range covers a wanted id are fetched, from
-        the ranges the build sealed into ``config.json``; a config without
-        them (a CSV build) means every part is read. A dataset with no
-        ``config.json`` raises :class:`NoIndex`.
+        Only the id map parts (idmap/block_{i}.parquet) whose id range covers
+        a requested id are read. A dataset with no saved index configuration
+        raises NoIndex.
+
+        Args:
+            dataset_name: Name of the dataset
+            ids: Vector ids (the ids a query returns)
+            implementation: Index implementation (default: "blocks")
+
+        Returns:
+            dict: {id: (record_id, chunk_idx)}; an id the index does not hold is absent
         """
         prefix = idmap_prefix(dataset_name, implementation)
         wanted = sorted({int(value) for value in ids})
@@ -1103,11 +1110,9 @@ class VectorDBClient:
         if filter_tags and config.get("source_format") == "parquet":
             raise NotAvailableOnParquet(f"'{dataset_name}' was built from parquet: {_TAGS_UNAVAILABLE}")
 
-        # a parquet build seals the source list and the block ranges into
-        # config.json, where provenance() reads the ranges; no function
-        # reads either list, and carried by every map and reduce task, a
-        # few dozen files push each task over what Lithops sends inline,
-        # so every function downloads its arguments from storage
+        # no function reads the source list or the block ranges a parquet
+        # build seals into config.json; dropped here, they do not travel
+        # with every map and reduce task
         config.pop("source_keys", None)
         config.pop("block_ranges", None)
 

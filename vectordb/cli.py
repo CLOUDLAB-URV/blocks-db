@@ -32,7 +32,7 @@ def load_backend_config():
 
 
 # What a user can get wrong, or the cloud refuse: said as a message instead of
-# a traceback. Anything else is a defect and keeps its traceback.
+# a traceback. Anything else is a bug and keeps its traceback.
 EXPECTED_ERRORS = (
     NotAvailableOnParquet,  # a CSV-path command on a parquet index
     IndexExists,            # a build over an index that is already there
@@ -42,7 +42,7 @@ EXPECTED_ERRORS = (
     ParquetSourceError,     # a source that cannot be read, named
     BlockTooSmall,          # fewer rows left in a block than its IVF lists
     CounterUnavailable,     # DynamoDB refused the id counter of a build
-    FunctionsTimedOut,      # functions that never finished
+    FunctionsTimedOut,      # functions that never started
 )
 
 
@@ -103,16 +103,16 @@ def _run():
     # ── initialize-database ───────────────────────────────────
     init_parser = subparsers.add_parser("initialize-database", help="Upload initial dataset and create index")
     init_parser.add_argument("name", help="Dataset name")
-    init_parser.add_argument("source", help="CSV file with vectors; with --format parquet, a parquet file, a directory of parquet files, or an s3:// file or prefix")
+    init_parser.add_argument("source", help="CSV file with vectors; with --format parquet, a parquet file, a directory of parquet files, or an s3:// URI (a prefix only when it ends with '/')")
     init_parser.add_argument("--format", choices=("csv", "parquet"), default="csv", help="Source format (default: csv). parquet builds an immutable index: no csv_blocks, no auto-indexer; features, num_index and k must be declared in the config")
     init_parser.add_argument("--config", required=True, help="Path to index config JSON")
     init_parser.add_argument("--replace", action="store_true", help="With --format parquet: delete an existing index of the same name and build again")
-    init_parser.add_argument("--files", default=None, help="With --format parquet: the file names read from a directory or s3:// prefix (default: *.parquet). For an Open Web Index day, whose directories also hold records files: '*_embeddings.parquet'")
-    init_parser.add_argument("--workers", type=int, default=None, help="Number of indexing workers (default: 16)")
-    init_parser.add_argument("--no-update-threshold", action="store_true", help="Skip auto-update threshold after indexing")
-    init_parser.add_argument("--skip-auto-indexer", action="store_true", help="Skip DynamoDB state init and vector tracking (for pure benchmarks)")
-    init_parser.add_argument("--build-local", action="store_true", help="Build csv_blocks from local file (skip S3 re-download during tracking)")
-    init_parser.add_argument("--csv-block-size", type=int, default=None, help="CSV block size in bytes for optimized vector reads (default: auto-calculated from index config)")
+    init_parser.add_argument("--files", default=None, help="With --format parquet: shell pattern for the file names read from a directory or s3:// prefix (default: *.parquet); '*_embeddings.parquet' skips the records files the Open Web Index publishes beside its embeddings")
+    init_parser.add_argument("--workers", type=int, default=None, help="Number of indexing workers (default: 16; CSV builds only)")
+    init_parser.add_argument("--no-update-threshold", action="store_true", help="Skip auto-update threshold after indexing (CSV builds only)")
+    init_parser.add_argument("--skip-auto-indexer", action="store_true", help="Skip DynamoDB state init and vector tracking (for pure benchmarks; CSV builds only)")
+    init_parser.add_argument("--build-local", action="store_true", help="Build csv_blocks from local file (skip S3 re-download during tracking; CSV builds only)")
+    init_parser.add_argument("--csv-block-size", type=int, default=None, help="CSV block size in bytes for optimized vector reads (default: auto-calculated from index config; CSV builds only)")
 
     # ── put ───────────────────────────────────────────────────
     put_parser = subparsers.add_parser("put", help="Add new vectors (stored as individual files)")
@@ -174,7 +174,7 @@ def _run():
 
     # a path given on the command line that does not exist ends the command
     # here, named, before anything is opened or uploaded; a FileNotFoundError
-    # raised later is a defect and keeps its traceback. A parquet source is
+    # raised later is a bug and keeps its traceback. A parquet source is
     # checked when it is expanded.
     paths = []
     if args.command == "initialize-database":

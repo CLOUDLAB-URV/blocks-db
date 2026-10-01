@@ -138,8 +138,8 @@ class TestADatasetWithNothingToSearch:
     @pytest.mark.parametrize("pending", [[], [(7, [0.0, 1.0])]], ids=["nothing pending", "pending vectors"])
     @pytest.mark.parametrize("ask", INDEXED_ONLY, ids=names)
     def test_an_indexed_only_query_without_an_index_says_so_whatever_is_pending(self, monkeypatch, queries, ask, pending):
-        # before, it printed "No index available" and answered with empty
-        # results and times["error"], as if a search had run
+        # an empty answer with times["error"] would read as a search that
+        # found nothing
         client = client_with(monkeypatch, indexes=[], pending=pending)
         with pytest.raises(NoIndex, match="No index found for dataset 'ds'"):
             ask(client, queries)

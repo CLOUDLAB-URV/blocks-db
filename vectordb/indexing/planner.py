@@ -7,9 +7,8 @@ ids, before any function runs.
 Row groups are the unit of work. When the files hold at least as many
 row groups as blocks, every block is a run of whole row groups, chosen
 so that block sizes are as even as the row-group edges allow. When they
-hold fewer, row groups are sliced at exact row boundaries instead: a
-function then decodes a whole row group to keep a part of it, which is
-the price of a publisher that wrote large groups.
+hold fewer, row groups are sliced at exact row boundaries instead, and a
+function decodes a whole row group to keep its part of it.
 
 Ids are ``id_offset + position`` for every row in file order across the
 sorted files, so they are unique and reproducible; rejected rows leave
@@ -82,8 +81,7 @@ class Plan:
     @property
     def imbalance(self) -> float:
         """Largest block over smallest: how uneven the row-group edges
-        made the split. A publisher that writes few, large row groups
-        cannot be split evenly without slicing."""
+        made the split."""
         return self.max_block_rows / self.min_block_rows
 
     @property
@@ -122,15 +120,14 @@ class Plan:
 
 
 def largest_nlist(rows: int) -> int:
-    """The largest IVF list count FAISS trains without complaint on
+    """The largest IVF list count FAISS trains without a warning on
     ``rows`` vectors (it wants at least 39 training points per list)."""
     return max(1, rows // 39)
 
 
 def suggested_nlist(rows: int) -> int:
     """Four times the square root of ``rows``, the low end of FAISS's
-    guidance, capped at :func:`largest_nlist`. More lists make training
-    slower for little recall."""
+    guidance, capped at :func:`largest_nlist`."""
     return min(largest_nlist(rows), max(1, round(4 * math.sqrt(rows))))
 
 
@@ -141,6 +138,7 @@ def plan(
     k: int | None = None,
     features: int | None = None,
 ) -> Plan:
+    """Plan exactly ``num_index`` blocks over ``files`` in sorted path order."""
     if not files:
         raise PlanError("no source files")
     if num_index < 1:

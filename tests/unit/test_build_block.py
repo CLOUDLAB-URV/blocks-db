@@ -95,7 +95,7 @@ def test_a_canonical_block_without_ids_keeps_the_index_id_as_provenance(tmp_path
 
 def test_a_block_left_below_k_by_rejections_is_refused_by_name(tmp_path):
     # the planner can only bound k from the footers; rejected rows are
-    # only known here, so the worker is the last line of defence
+    # only known here, so the worker is the last line of defense
     source = tmp_path / "bad.parquet"
     write_owi(source, rows=8, row_group_size=4, bad_rows=set(range(4)))
     result = plan([inspect(str(source))], num_index=2, k=1)

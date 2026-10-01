@@ -77,8 +77,8 @@ def build_block_from_parquet(block_plan, params, storage: Storage):
     plus its provenance map ``idmap/block_{i}.parquet`` (``id``,
     ``record_id``, ``chunk_idx``; canonical files carry their own id, or
     the index id when they have none, as ``record_id`` text and
-    ``chunk_idx`` 0). Returns counts, not just
-    time, so a build reports what it kept and what it rejected.
+    ``chunk_idx`` 0). Returns the block number, the rows kept, the rows
+    rejected and the seconds the block took.
 
     Raises :class:`BlockTooSmall` when the rows that survive reading are
     fewer than the IVF list count, which the planner can only bound from

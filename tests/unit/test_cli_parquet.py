@@ -73,7 +73,7 @@ def test_an_existing_index_ends_the_command_with_the_reason(tmp_path, monkeypatc
     cli.ParquetSourceError("day/metadata_0_records.parquet: no known vector dialect"),
     cli.BlockTooSmall("block 0 kept 12 rows for 1650 IVF lists"),
     cli.CounterUnavailable("cannot seed the id counter of 'ds' in DynamoDB"),
-    FunctionsTimedOut("3 of 8 functions did not finish, and none finished in the last 960 s"),
+    FunctionsTimedOut("3 of 8 functions never started, and no function started or finished in the last 960 s"),
 ], ids=["plan", "source", "block", "counter", "timeout"])
 def test_a_build_that_cannot_go_on_says_why_instead_of_a_traceback(error, tmp_path, monkeypatch):
     # a traceback for something the user can correct reads like a crash
