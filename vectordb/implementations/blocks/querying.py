@@ -234,7 +234,7 @@ def _search_indexed(task_spec, k, storage, config, start, source="indexed"):
                 if matching_ids:
                     sel = faiss.IDSelectorBatch(list(matching_ids))
                     d, i = index.search(np.array(queries), k,
-                                        params=faiss.SearchParametersIVF(sel=sel))
+                                        params=faiss.SearchParametersIVF(sel=sel, nprobe=index.nprobe))
                     for x in range(len(queries)):
                         res_queries[x].append([d[x].tolist(), i[x].tolist()])
                 else:

@@ -1,4 +1,4 @@
-"""The indexed search: n_probe governs it, each task owns its files and cleans
+"""The indexed search: n_probe governs it, filtered or not, each task owns its files and cleans
 them up, tags are read per block, no sentinels."""
 
 import shutil
@@ -80,6 +80,23 @@ class TestNProbeGovernsTheSearch:
         assert len(wide) == 10
         assert {row[0] for row in narrow} <= set(range(6))
         assert {row[0] for row in wide} & set(range(6, 12))
+
+    def test_a_pre_filtered_search_probes_as_many_lists(self, two_cluster_block):
+        # the selector travels in SearchParametersIVF, whose own nprobe would
+        # otherwise replace the index's with its default of one list. Even
+        # ids are tagged "web": 6, 8 and 10 sit in the far list, and an odd
+        # id would mean the selector was not applied
+        storage, _ = two_cluster_block
+        storage.put_object(
+            "bucket", "indexes/ds/blocks/centroid_0_tags.json",
+            orjson.dumps({str(i): {"source": "web" if i % 2 == 0 else "feed"} for i in range(12)}),
+        )
+        storage.put_object(
+            "bucket", "indexes/ds/blocks/centroid_0_reverse_tags.json",
+            orjson.dumps({"source:web": list(range(0, 12, 2)), "source:feed": list(range(1, 12, 2))}),
+        )
+        filtered = search(storage, params(n_probe=2, filter_tags={"source": "web"}, filter_mode="pre"))[0]
+        assert {row[0] for row in filtered} == {0, 2, 4, 6, 8, 10}
 
     def test_no_sentinel_id_is_returned_when_a_list_is_short(self, two_cluster_block):
         storage, _ = two_cluster_block
