@@ -37,7 +37,9 @@ class FakeBucket:
             def paginate(self, Bucket, Prefix):
                 if refused and Prefix.startswith(refused):
                     raise ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "ListObjectsV2")
-                yield {"Contents": [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]}
+                found = [{"Key": key} for key in sorted(keys) if key.startswith(Prefix)]
+                for start in range(0, len(found), 1000):  # S3 pages hold 1,000 keys at most
+                    yield {"Contents": found[start:start + 1000]}
 
         return Paginator()
 
@@ -285,6 +287,18 @@ def test_copies_that_cannot_be_deleted_are_named_and_the_rest_still_goes(monkeyp
     dataset_ops.delete_dataset("bucket", "ds")
     assert bucket.keys == {"datasets/ds/source/metadata_0_embeddings.parquet"}
     assert "Could not delete datasets/ds/source/: An error occurred (AccessDenied)" in capsys.readouterr().out
+
+
+def test_every_pending_file_goes_with_the_dataset(monkeypatch):
+    # a parquet build refuses a name with pending files, and names
+    # delete-dataset as the way out, so it must clear them all, past the
+    # first page of a listing
+    bucket = FakeBucket([f"pending/ds/{i}.csv" for i in range(1500)] + ["pending/ds-2/0.csv"])
+    monkeypatch.setattr(dataset_ops, "s3", bucket)
+    monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: None)
+    monkeypatch.setattr(index_ops, "delete_index_configs", lambda *args: None)
+    dataset_ops.delete_dataset("bucket", "ds")
+    assert bucket.keys == {"pending/ds-2/0.csv"}
 
 
 def test_keys_a_batch_deletion_refuses_are_named_too(monkeypatch, capsys):

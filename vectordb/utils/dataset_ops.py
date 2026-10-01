@@ -70,9 +70,10 @@ def delete_dataset(bucket, dataset_name):
     except:
         pass
 
-    # processed vectors, and the copies a parquet build uploaded from local
-    # files; a source read in place (s3://) is never under this prefix
-    for prefix in (f"processed/{dataset_name}/", f"datasets/{dataset_name}/source/"):
+    # processed and pending vectors, and the copies a parquet build uploaded
+    # from local files; a source read in place (s3://) is never under these
+    # prefixes
+    for prefix in (f"processed/{dataset_name}/", f"pending/{dataset_name}/", f"datasets/{dataset_name}/source/"):
         # the copies of a corpus can be large: say what stays behind
         refused = []
         try:
