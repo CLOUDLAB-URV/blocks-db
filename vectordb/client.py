@@ -111,9 +111,9 @@ class VectorDBClient:
     def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, dynamodb_table_name: str = None, wait_timeout: float = None):
         """Initialize client with S3 bucket, optional region, SQS queue URL and DynamoDB table name.
 
-        ``wait_timeout`` is how many seconds a build or a query waits without
-        any function finishing before it gives up: None derives it from the
-        backend's function timeout, 0 waits for ever.
+        ``wait_timeout`` is how many seconds a build or a query waits for
+        functions that never start, counted from the last start or finish:
+        None derives it from the backend's function timeout, 0 waits forever.
         """
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url

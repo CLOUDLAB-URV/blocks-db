@@ -1,5 +1,6 @@
-"""The wait for the functions gives up when none finishes for longer than a
-function may run, and keeps going while they finish however slowly."""
+"""The wait for the functions gives up when some never start and none starts
+or finishes within the window, and hands over to get_result as soon as every
+function has started."""
 
 import pytest
 
@@ -7,29 +8,38 @@ from vectordb.utils.waiting import FunctionsTimedOut, collect, inactivity_window
 
 
 class Future:
-    def __init__(self, finishes_at):
-        self.finishes_at = finishes_at
-        self.done = False
+    """The public states the job monitor sets on a Lithops future, here
+    following a clock: running from ``starts_at``, ready from ``finishes_at``
+    (None: never)."""
+
+    success = done = False
+
+    def __init__(self, executor, starts_at, finishes_at):
+        self.executor, self.starts_at, self.finishes_at = executor, starts_at, finishes_at
+
+    def _passed(self, moment):
+        return moment is not None and moment <= self.executor.now
+
+    @property
+    def ready(self):
+        return self._passed(self.finishes_at)
+
+    @property
+    def running(self):
+        return self._passed(self.starts_at) and not self.ready
 
 
 class FakeExecutor:
-    """A clock, the futures it marks done as the clock passes their time,
-    and the two Lithops calls the wait makes."""
+    """A clock, the futures of a map, and the one Lithops call the wait makes."""
 
-    def __init__(self, config, finishes_at=()):
+    def __init__(self, config, functions=()):
         self.config = config
-        self.futures = [Future(at) for at in finishes_at]
         self.now = 0.0
-        self.calls = []
-
-    def wait(self, futures, return_when, show_progressbar):
-        self.calls.append("wait")
-        for future in futures:
-            if future.finishes_at is not None and future.finishes_at <= self.now:
-                future.done = True
+        self.futures = [Future(self, starts_at, finishes_at) for starts_at, finishes_at in functions]
+        self.handed_over_at = None
 
     def get_result(self, futures):
-        self.calls.append("get_result")
+        self.handed_over_at = self.now
         return [future.finishes_at for future in futures]
 
     def sleep(self, seconds):
@@ -58,32 +68,48 @@ class TestTheWindow:
 
 
 class TestCollect:
-    def test_the_results_come_back_once_every_function_has_finished(self):
-        executor = FakeExecutor(lambda_config(), finishes_at=[2, 5])
+    def test_get_result_takes_over_as_soon_as_every_function_has_started(self):
+        executor = FakeExecutor(lambda_config(), functions=[(0, 2), (1, 5)])
         assert run(executor, window=10) == [2, 5]
-        assert executor.calls[-1] == "get_result"
+        assert executor.handed_over_at == 1
 
-    def test_the_wait_ends_when_nothing_finishes_for_a_window(self):
-        executor = FakeExecutor(lambda_config(), finishes_at=[None, None, 1])
-        with pytest.raises(FunctionsTimedOut, match="2 of 3 functions did not finish, and none finished in the last 10 s"):
+    def test_a_started_function_may_outlast_the_window(self):
+        # Lithops' own timeout watches a function that has started
+        executor = FakeExecutor(lambda_config(), functions=[(0, 100)])
+        assert run(executor, window=10) == [100]
+        assert executor.handed_over_at == 0
+
+    def test_the_wait_ends_when_functions_never_start(self):
+        executor = FakeExecutor(lambda_config(), functions=[(0, 1), (None, None), (None, None)])
+        with pytest.raises(FunctionsTimedOut, match="2 of 3 functions never started, and no function started or finished in the last 10 s"):
             run(executor, window=10)
-        assert executor.now == pytest.approx(11, abs=1)
+        assert executor.now == pytest.approx(12, abs=1)
+        assert executor.handed_over_at is None
 
-    def test_functions_that_keep_finishing_keep_the_wait_alive(self):
-        # throttled functions finish one after another: the total exceeds the
-        # window but no single gap does, so nothing is wrong
-        executor = FakeExecutor(lambda_config(), finishes_at=[8, 16, 24, 32])
-        assert run(executor, window=10) == [8, 16, 24, 32]
+    def test_starts_and_finishes_both_keep_the_wait_alive(self):
+        # throttled maps, whose functions start late: the whole wait exceeds
+        # the window, but no gap without a start or a finish does
+        starting = FakeExecutor(lambda_config(), functions=[(0, 30), (8, 30), (16, 30)])
+        assert run(starting, window=10) == [30, 30, 30]
+        assert starting.handed_over_at == 16
+        finishing = FakeExecutor(lambda_config(), functions=[(0, 9), (18, 20)])
+        assert run(finishing, window=10) == [9, 20]
+        assert finishing.handed_over_at == 18
+
+    def test_a_running_function_alone_is_no_progress(self):
+        executor = FakeExecutor(lambda_config(), functions=[(0, None), (18, 20)])
+        with pytest.raises(FunctionsTimedOut, match="1 of 2 functions never started"):
+            run(executor, window=10)
 
     def test_a_zero_window_waits_as_get_result_does(self):
-        executor = FakeExecutor(lambda_config(), finishes_at=[None])
+        executor = FakeExecutor(lambda_config(), functions=[(None, None)])
         assert run(executor, window=0) == [None]
-        assert executor.calls == ["get_result"]
+        assert executor.handed_over_at == 0
 
     def test_without_a_declared_timeout_the_wait_is_unbounded(self):
-        executor = FakeExecutor({"lithops": {"backend": "localhost"}, "localhost": {}}, finishes_at=[None])
+        executor = FakeExecutor({"lithops": {"backend": "localhost"}, "localhost": {}}, functions=[(None, None)])
         assert run(executor, window=None) == [None]
-        assert executor.calls == ["get_result"]
+        assert executor.handed_over_at == 0
 
 
 class TestTheCallers:

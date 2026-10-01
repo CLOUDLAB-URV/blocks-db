@@ -10,4 +10,4 @@
 | `vector_utils.py` | CSV parsing: load vectors with/without IDs/tags |
 | `vector_tracking.py` | `VectorIndexTracker` — DynamoDB + S3 tracking for pending/indexed vectors |
 | `hybrid_search.py` | `brute_force_search` + `merge_search_results` for hybrid queries |
-| `waiting.py` | `collect` — wait for the functions of a map, giving up when none finishes for longer than a function may run |
+| `waiting.py` | `collect` — wait for the functions of a map, giving up when some never start and none starts or finishes within the wait window |

@@ -10,8 +10,8 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1")
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", sqs_queue_url="https://sqs...")
 # With a DynamoDB table other than BlocksDB-default:
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", dynamodb_table_name="your-table")
-# Seconds without any function finishing before a build or a query gives up
-# (default: the function timeout + 60; 0 waits for ever):
+# Seconds a build or a query waits for functions that never start, counted from
+# the last start or finish (default: the function timeout + 60; 0 waits forever):
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1200)
 ```
 
@@ -86,7 +86,7 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1
 |-----------|-------------|
 | `NoIndex` (a `ValueError`) | A query names a dataset that has no index and no pending vectors: nothing could be searched |
 | `QueryMismatch` (a `ValueError`) | The query vectors do not have the index's dimension, the batch is empty, or `batch_size` is below 1 |
-| `FunctionsTimedOut` (a `TimeoutError`) | No function of a build or a query finished within the wait timeout |
+| `FunctionsTimedOut` (a `TimeoutError`) | Functions of a build or a query never started, and none started or finished within the wait timeout |
 
 ## Examples
 

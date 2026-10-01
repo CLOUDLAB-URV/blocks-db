@@ -95,10 +95,10 @@ class TestCli:
                 pass
 
             def query(self, *args, **kwargs):
-                raise FunctionsTimedOut("8 of 8 functions did not finish")
+                raise FunctionsTimedOut("8 of 8 functions never started")
 
         monkeypatch.setattr(cli, "VectorDBClient", GivingUpClient)
         monkeypatch.setattr("sys.argv", ["blocks-db", "--bucket", "b", "query", "ds", "--vector", "0.1 0.2"])
         with pytest.raises(SystemExit) as stopped:
             cli.main()
-        assert str(stopped.value.code) == "Error: 8 of 8 functions did not finish"
+        assert str(stopped.value.code) == "Error: 8 of 8 functions never started"

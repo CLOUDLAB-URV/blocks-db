@@ -45,7 +45,7 @@ def _run():
     parser.add_argument("--bucket", help="S3 bucket")
     parser.add_argument("--region", help="AWS region")
     parser.add_argument("--table-name", help="DynamoDB table (default: BlocksDB-default)")
-    parser.add_argument("--wait-timeout", type=float, help="Seconds without any function finishing before a build or a query gives up (default: the function timeout + 60; 0 waits for ever)")
+    parser.add_argument("--wait-timeout", type=float, help="Seconds a build or a query waits for functions that never start, counted from the last start or finish (default: the function timeout + 60; 0 waits forever)")
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -80,7 +80,7 @@ def _run():
     configure_parser.add_argument("--region", default="us-east-1", help="AWS region")
     configure_parser.add_argument("--sqs", action="store_true", help="Use SQS for auto-indexer notifications")
     configure_parser.add_argument("--table-name", default=argparse.SUPPRESS, help="DynamoDB table used by the client")
-    configure_parser.add_argument("--wait-timeout", type=float, default=argparse.SUPPRESS, help="Seconds without any function finishing before giving up (0 waits for ever)")
+    configure_parser.add_argument("--wait-timeout", type=float, default=argparse.SUPPRESS, help="Seconds to wait for functions that never start, counted from the last start or finish (0 waits forever)")
 
     # ── initialize-database ───────────────────────────────────
     init_parser = subparsers.add_parser("initialize-database", help="Upload initial dataset and create index")
