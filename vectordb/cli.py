@@ -218,6 +218,10 @@ def _run():
         config_data = {"bucket": args.bucket, "region": region, "lambda_function_name": function_name}
         if args.table_name:
             config_data["dynamodb_table_name"] = args.table_name
+        # the wait is configure's to save; setup only carries it over
+        wait_timeout = load_backend_config().get("wait_timeout")
+        if wait_timeout is not None:
+            config_data["wait_timeout"] = wait_timeout
         if use_s3express:
             config_data["s3express"] = True
             az = parse_express_az(args.bucket)

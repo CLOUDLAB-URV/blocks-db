@@ -127,7 +127,8 @@ started or finished for the function timeout plus a minute (see
 `vectordb/README.md`, Common Pitfalls). To change that window:
 `--wait-timeout` on `configure` saves it, and the global `--wait-timeout`
 flag or the `SVDB_WAIT_TIMEOUT` environment variable override it for one
-command; `0` waits forever.
+command; `0` waits forever. `setup` keeps a saved value, and `configure` without
+`--wait-timeout` drops it.
 
 ---
 

@@ -81,6 +81,17 @@ class TestCli:
             self.run(monkeypatch, "status", "ds")
         assert built["wait_timeout"] == 1200
 
+    def test_setup_keeps_the_saved_value(self, cli_env, monkeypatch):
+        # setup rewrites the saved file, and the README runs configure first
+        config_file, built = cli_env
+        monkeypatch.setattr(cli, "run_setup", lambda **kwargs: None)
+        self.run(monkeypatch, "configure", "--bucket", "b", "--wait-timeout", "1200")
+        self.run(monkeypatch, "--region", "us-east-1", "setup", "--bucket", "b")
+        assert json.loads(config_file.read_text())["wait_timeout"] == 1200
+        # the global flag lasts for one command, setup included
+        self.run(monkeypatch, "--region", "us-east-1", "--wait-timeout", "30", "setup", "--bucket", "b")
+        assert json.loads(config_file.read_text())["wait_timeout"] == 1200
+
     def test_without_any_setting_the_client_derives_it(self, cli_env, monkeypatch):
         _, built = cli_env
         with pytest.raises(Captured):
