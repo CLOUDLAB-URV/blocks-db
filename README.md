@@ -295,7 +295,7 @@ blocks-db initialize-database mydata /path/to/parquet --format parquet --config 
 blocks-db initialize-database mydata s3://my-bucket/path/to/parquet/ --format parquet --config config.json
 ```
 
-The files must use one of the layouts in [Parquet vectors](#parquet-vectors). Local files are uploaded to the bucket under `datasets/<dataset>/source/`, and `delete-dataset` removes them; `s3://` files are read in place and left untouched.
+The files must use one of the layouts in [Parquet vectors](#parquet-vectors). Local files are uploaded to the bucket under `datasets/<dataset>/source/`, and `delete-dataset` removes them; `s3://` files are read in place and left untouched. The functions read them with their execution role, so a source in another bucket must be readable by that role.
 
 Example (`config.json`):
 
