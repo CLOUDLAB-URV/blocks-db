@@ -6,12 +6,9 @@ import time
 from lithops import Storage
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from vectordb.implementations.blocks.indexing import FaissIVFIndex
 from vectordb.implementations.blocks.partitioning import BlockPartitioner
-from vectordb.utils.parquet import iter_ranges
 
 
 class BlockTooSmall(ValueError):
@@ -84,6 +81,13 @@ def build_block_from_parquet(block_plan, params, storage: Storage):
     fewer than the IVF list count, which the planner can only bound from
     the footers.
     """
+    # imported here, so the CSV build of this module runs on an image
+    # without pyarrow
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from vectordb.utils.parquet import iter_ranges
+
     start = time.time()
     dimension = params.features
     # the plan says how many rows this block can hold, so the matrix is
