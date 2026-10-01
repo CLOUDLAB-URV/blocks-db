@@ -287,6 +287,24 @@ def test_copies_that_cannot_be_deleted_are_named_and_the_rest_still_goes(monkeyp
     assert "Could not delete datasets/ds/source/: An error occurred (AccessDenied)" in capsys.readouterr().out
 
 
+def test_keys_a_batch_deletion_refuses_are_named_too(monkeypatch, capsys):
+    # S3 answers a batch deletion with the keys it could not delete, not
+    # with an error
+    class RefusingDeletes(FakeBucket):
+        def delete_objects(self, Bucket, Delete):
+            refused = [item["Key"] for item in Delete["Objects"] if item["Key"].startswith("datasets/ds/source/")]
+            self.keys -= {item["Key"] for item in Delete["Objects"]} - set(refused)
+            return {"Errors": [{"Key": key, "Code": "AccessDenied", "Message": "Access Denied"} for key in refused]}
+
+    bucket = RefusingDeletes(["processed/ds/0.csv", "datasets/ds/source/a.parquet", "datasets/ds/source/b.parquet"])
+    monkeypatch.setattr(dataset_ops, "s3", bucket)
+    monkeypatch.setattr(index_ops, "delete_indexes", lambda *args: None)
+    monkeypatch.setattr(index_ops, "delete_index_configs", lambda *args: None)
+    dataset_ops.delete_dataset("bucket", "ds")
+    assert bucket.keys == {"datasets/ds/source/a.parquet", "datasets/ds/source/b.parquet"}
+    assert "Could not delete 2 objects under datasets/ds/source/ (first: datasets/ds/source/a.parquet, AccessDenied)" in capsys.readouterr().out
+
+
 def test_an_interrupted_delete_stops_instead_of_going_on(monkeypatch):
     class InterruptedBucket(FakeBucket):
         def get_paginator(self, _name):

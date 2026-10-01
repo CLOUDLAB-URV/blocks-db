@@ -73,15 +73,20 @@ def delete_dataset(bucket, dataset_name):
     # processed vectors, and the copies a parquet build uploaded from local
     # files; a source read in place (s3://) is never under this prefix
     for prefix in (f"processed/{dataset_name}/", f"datasets/{dataset_name}/source/"):
+        # the copies of a corpus can be large: say what stays behind
+        refused = []
         try:
             paginator = s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 if "Contents" in page:
                     objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
-                    s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+                    # S3 lists the keys it could not delete in the answer
+                    refused += (s3.delete_objects(Bucket=bucket, Delete={"Objects": objects}) or {}).get("Errors", [])
         except ClientError as error:
-            # the copies of a corpus can be large: say what stays behind
             print(f"Could not delete {prefix}: {error}")
+        if refused:
+            print(f"Could not delete {len(refused)} objects under {prefix}"
+                  f" (first: {refused[0].get('Key')}, {refused[0].get('Code')})")
 
     from .index_ops import delete_indexes, delete_index_configs
     delete_indexes(bucket, dataset_name)
