@@ -287,9 +287,11 @@ Alternatively, each row in the CSV can carry its own tags as a JSON third
 column. This is more granular than batch-level `--tags`:
 
 ```
-1 0.1 0.2 ... {"source":"web","priority":"high"}
-2 0.4 0.5 ... {"source":"api","priority":"low"}
+1,0.1 0.2 ...,{"source":"web"}
+2,0.4 0.5 ...,"{""source"":""api"",""priority"":""low""}"
 ```
+
+The format is described under [File Formats](#-file-formats).
 
 When `--tags` and per-vector tags are both present, per-vector tags take
 precedence.
@@ -406,25 +408,38 @@ blocks-db get mydataset --pending
 
 ### Vectors CSV
 
-First column: ID (integer), rest: space-separated values.
+The ID (integer), a comma, then the values separated by spaces.
 
 ```
-1 0.1 0.2 0.3 ...
-2 0.4 0.5 0.6 ...
+1,0.1 0.2 0.3 ...
+2,0.4 0.5 0.6 ...
 ```
 
 ### Vectors CSV with Per-Vector Tags
 
-Add a third column with a JSON object for per-vector tags:
+Add a third column with a JSON object for per-vector tags. A JSON object
+with more than one key holds commas, so it is quoted as a CSV field, with
+its double quotes doubled:
 
 ```
-1 0.1 0.2 ... {"source":"web","priority":"high"}
-2 0.4 0.5 ... {"source":"api","priority":"low"}
+1,0.1 0.2 ...,{"source":"web"}
+2,0.4 0.5 ...,"{""source"":""api"",""priority"":""low""}"
 ```
 
 When the third column is present, `initialize-database` and the auto-indexer
-Lambda store the tags alongside each vector in the index. Vectors without a
-third column are untagged and match any filter.
+Lambda store the tags alongside each vector in the index. A vector without a
+third column, put without `--tags`, has no tags: a query with `--filter` does
+not return it.
+
+### Queries CSV
+
+The file of `query --file` holds one query per line: its values separated by
+spaces, with no ID.
+
+```
+0.1 0.2 0.3 ...
+0.4 0.5 0.6 ...
+```
 
 ---
 
