@@ -430,8 +430,9 @@ its double quotes doubled:
 
 When the third column is present, `initialize-database` and the auto-indexer
 Lambda store the tags alongside each vector in the index. A vector without a
-third column, put without `--tags`, has no tags: a query with `--filter` does
-not return it.
+third column, put without `--tags`, has no tags: a query with `--filter` on an
+indexed dataset does not return it, unless the filter matches no block and no
+pending file; the query then searches every pending vector without the filter.
 
 ### Queries CSV
 
