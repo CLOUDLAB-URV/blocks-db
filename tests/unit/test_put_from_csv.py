@@ -77,3 +77,17 @@ class TestSingle:
     def test_tags_that_are_not_an_object_are_dropped(self, put):
         # as the loader behind the other put paths does
         assert put("1,0.1 0.2,[1]\n", "--single") == [[["1", "0.1 0.2"]]]
+
+
+class TestTagsOnSomeRows:
+    def test_tags_below_an_untagged_first_row_are_kept(self, put):
+        # the first row alone must not decide whether the file carries tags
+        ((first, second),) = put('1,0.1 0.2\n2,0.3 0.4,"{""source"":""api"",""priority"":""low""}"\n')
+        assert first == ["1", "0.1 0.2"]
+        assert second[:2] == ["2", "0.3 0.4"]
+        assert json.loads(second[2]) == {"source": "api", "priority": "low"}
+
+    def test_a_file_without_tags_is_still_read_strictly(self, put):
+        # a row with no comma stops the command with its line number
+        with pytest.raises(ValueError, match="Malformed line"):
+            put("1,0.1 0.2\n2 0.3 0.4\n")

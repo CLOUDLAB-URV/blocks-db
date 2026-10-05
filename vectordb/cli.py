@@ -428,7 +428,7 @@ def _run():
                 for r in first:
                     if len(r) > 2 and r[2].strip():
                         has_3rd_col = True
-                    break
+                        break
 
             if has_3rd_col:
                 vectors_with_tags = load_vectors_with_ids_and_tags_from_csv(args.csv_path)
