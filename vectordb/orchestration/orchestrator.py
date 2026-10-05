@@ -7,12 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 import orjson
 
 from vectordb.config import SvlessVectorDBParams
+from vectordb.utils.waiting import collect
 
 
 class Orchestrator:
 
-    def __init__(self, config: SvlessVectorDBParams, window_time=60):
+    def __init__(self, config: SvlessVectorDBParams, window_time=60, wait_timeout=None):
         self.window_time = window_time
+        self.wait_timeout = wait_timeout
         self.function_executor = FunctionExecutor()
         self.config = config
         self.pool = ThreadPoolExecutor(max_workers=20)
@@ -100,7 +102,7 @@ class Orchestrator:
             index_to_compute,
             runtime_memory=self.config.search_map_mem
         )
-        map_futures_res = self.function_executor.get_result(wait_dur_sec=0)
+        map_futures_res = collect(self.function_executor, futures, self.wait_timeout)
         lambda_invocation_map = [
             f.stats["worker_func_start_tstamp"] - f.stats["host_job_create_tstamp"]
             for f in futures
@@ -125,7 +127,7 @@ class Orchestrator:
             reduce_iterdata,
             runtime_memory=self.config.search_reduce_mem
         )
-        reduce_futures_res = self.function_executor.get_result(wait_dur_sec=0)
+        reduce_futures_res = collect(self.function_executor, futures, self.wait_timeout)
         lambda_invocation_reduce = [
             f.stats["worker_func_start_tstamp"] - f.stats["host_job_create_tstamp"]
             for f in futures

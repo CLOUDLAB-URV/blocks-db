@@ -32,6 +32,32 @@ from .serverless_vectordb import ServerlessVectorDB
 BLOCK_SIZE = 500000  # ~500KB per block for CSV blocks
 
 
+class NoIndex(ValueError):
+    """A query asked for a dataset that has no index to search.
+
+    It is a ValueError, so code that catches ValueError catches it too."""
+
+
+class QueryMismatch(ValueError):
+    """A query the index cannot answer as it stands."""
+
+
+def check_queries(vectors, features):
+    """Stop a query that the index cannot answer before any function is invoked.
+
+    faiss asserts on the dimension inside the map function, with a message
+    that names neither the index nor the query, and an empty batch would
+    invoke the functions to search nothing.
+    """
+    if vectors.ndim != 2 or vectors.shape[0] == 0:
+        raise QueryMismatch(f"a query needs at least one vector, got an array of shape {vectors.shape}")
+    if vectors.shape[1] != features:
+        raise QueryMismatch(
+            f"the index holds vectors of {features} dimensions,"
+            f" the query has {vectors.shape[1]}"
+        )
+
+
 def build_csv_blocks_from_local(csv_path: str):
     """Read a local CSV file and build csv_blocks (byte-offset chunks) + last_vid.
 
@@ -82,17 +108,23 @@ from .utils.s3_utils import is_s3express_bucket
 
 class VectorDBClient:
 
-    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None):
-        """Initialize client with S3 bucket, optional region and SQS queue URL."""
+    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, dynamodb_table_name: str = None, wait_timeout: float = None):
+        """Initialize client with S3 bucket, optional region, SQS queue URL and DynamoDB table name.
+
+        ``wait_timeout`` is how many seconds a build or a query waits for
+        functions that never start, counted from the last start or finish:
+        None derives it from the backend's function timeout, 0 waits forever.
+        """
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url
+        self.wait_timeout = wait_timeout
 
         if region:
             self.s3 = boto3.client("s3", region_name=region)
         else:
             self.s3 = boto3.client("s3")
 
-        self.tracker = VectorIndexTracker(bucket, region, sqs_queue_url=sqs_queue_url)
+        self.tracker = VectorIndexTracker(bucket, region, sqs_queue_url=sqs_queue_url, table_name=dynamodb_table_name)
 
     def create_dataset(self, name: str, csv_path: str):
         """
@@ -228,7 +260,7 @@ class VectorDBClient:
         config["storage_bucket"] = self.bucket
 
         print(f"Initializing ServerlessVectorDB for dataset '{dataset_name}'...")
-        sv_vectordb = ServerlessVectorDB(**config)
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)
 
         filename = f"datasets/{dataset_name}/source.csv"
 
@@ -299,12 +331,8 @@ class VectorDBClient:
     def _setup_auto_indexer_state(self, dataset_name: str, config: dict):
         """Set up DynamoDB state for auto-indexer to continue from where manual indexing left off."""
 
-        dynamodb = boto3.resource("dynamodb")
-
-        table_name = "BlocksDB-default"
-        
         try:
-            table = dynamodb.Table(table_name)
+            table = self.tracker.table
             num_index = config.get("num_index", 16)
             
             table.update_item(
@@ -321,14 +349,8 @@ class VectorDBClient:
 
         implementation = config.get("implementation", "blocks")
 
-        table_name = "BlocksDB-default"
-
         s3 = boto3.client("s3")
-        try:
-            dynamodb = boto3.resource("dynamodb")
-            table = dynamodb.Table(table_name)
-        except Exception:
-            return
+        table = self.tracker.table
 
         written = 0
         for cid in range(num_index):
@@ -401,7 +423,7 @@ class VectorDBClient:
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
         
-        sv_vectordb = ServerlessVectorDB(**config)
+        sv_vectordb = ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)
         filename = f"datasets/{dataset_name}/source.csv"
         
         print("Rebuilding indexes with pending vectors...")
@@ -623,7 +645,7 @@ class VectorDBClient:
         """
 
         if not vectors:
-            raise ValueError("No query vectors provided.")
+            raise QueryMismatch("No query vectors provided.")
 
         vectors_np = np.array(vectors)
         
@@ -653,6 +675,8 @@ class VectorDBClient:
             vecs = vectors
         else:
             raise ValueError("Provide either vector or vectors")
+        if not len(vecs):
+            raise QueryMismatch("No query vectors provided.")
         
         return self._query_indexed_only(dataset_name, np.array(vecs), k, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
 
@@ -690,29 +714,30 @@ class VectorDBClient:
     def _query_indexed_only(self, dataset_name: str, vectors_np: np.ndarray, k: int = None, batch_size: int = None, filter_tags: dict = None, filter_mode: str = "post"):
         """Query only the FAISS index (no pending vectors)."""
         k = k if k is not None else self._get_k_result(dataset_name)
-        
-        try:
-            sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
-            neighbours, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
-            if not neighbours:
-                neighbours = [[] for _ in range(len(vectors_np))]
-        except ValueError as e:
-            print(f"No index available: {e}")
+
+        sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
+        check_queries(vectors_np, sv_vectordb.params.features)
+        neighbours, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
+        if not neighbours:
             neighbours = [[] for _ in range(len(vectors_np))]
-            times = {"error": str(e)}
-        
+
         return neighbours, times
 
     def _query_hybrid(self, dataset_name: str, vectors_np: np.ndarray, k: int = None, batch_size: int = None, filter_tags: dict = None, filter_mode: str = "post"):
         """Internal hybrid query implementation."""
         k = k if k is not None else self._get_k_result(dataset_name)
 
+        # only a missing index is a fallback: a search that fails must not
+        # come back as no results at all
+        results = times = None
         try:
             sv_vectordb = self._load_default_index(dataset_name, batch_size=batch_size, filter_tags=filter_tags, filter_mode=filter_mode)
+        except NoIndex as missing:
+            no_index = missing
+        else:
+            no_index = None
+            check_queries(vectors_np, sv_vectordb.params.features)
             results, times = sv_vectordb.search(0, vectors_np, filter_tags=filter_tags)
-        except ValueError:
-            results = None
-            times = {"error": "no index available"}
 
         if not results and self.has_pending_vectors(dataset_name):
             from .utils.hybrid_search import brute_force_search
@@ -724,6 +749,10 @@ class VectorDBClient:
                 times = {"fallback": "no index, searched pending only"}
 
         if not results:
+            if no_index is not None:
+                # nothing was searched: saying so beats an empty answer that
+                # reads like "no neighbors"
+                raise no_index
             results = [[] for _ in range(len(vectors_np))]
 
         times["hybrid_search"] = True
@@ -763,7 +792,7 @@ class VectorDBClient:
                 vectors.append(vec)
 
         if not vectors:
-            raise ValueError("No valid vectors found in CSV.")
+            raise QueryMismatch("No valid vectors found in CSV.")
 
         vectors_np = np.array(vectors)
         
@@ -821,7 +850,7 @@ class VectorDBClient:
         indexes = self.list_indexes(dataset_name)
 
         if not indexes:
-            raise ValueError(f"No index found for dataset '{dataset_name}'. Run indexing first.")
+            raise NoIndex(f"No index found for dataset '{dataset_name}'. Run indexing first.")
 
         if len(indexes) > 1:
             raise ValueError(
@@ -840,13 +869,15 @@ class VectorDBClient:
 
         config["dataset"] = dataset_name
         config["storage_bucket"] = self.bucket
-        config["dynamodb_table_name"] = self.tracker.DYNAMODB_TABLE_NAME
+        config["dynamodb_table_name"] = self.tracker.table_name
         config["dynamodb_region"] = self.tracker.dynamodb.meta.client.meta.region_name
 
         if batch_size is not None:
+            if batch_size < 1:
+                raise QueryMismatch(f"the query batch size is how many blocks a function searches, so it must be at least 1, got {batch_size}")
             config["query_batch_size"] = batch_size
         if filter_tags is not None:
             config["filter_tags"] = filter_tags
         config["filter_mode"] = filter_mode
 
-        return ServerlessVectorDB(**config)
+        return ServerlessVectorDB(wait_timeout=self.wait_timeout, **config)

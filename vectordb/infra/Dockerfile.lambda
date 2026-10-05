@@ -35,10 +35,10 @@ RUN pip install --upgrade --ignore-installed pip wheel six setuptools \
         k-means-constrained \
         "numpy<2"
 
-# Add this package
-COPY vectordb /tmp/vectordb
-COPY pyproject.toml /tmp/vectordb/
-RUN pip install /tmp/vectordb
+# Install from a project root: packages.find needs vectordb/ beside pyproject.toml
+COPY vectordb /tmp/blocks-db/vectordb
+COPY pyproject.toml /tmp/blocks-db/
+RUN pip install /tmp/blocks-db
 
 WORKDIR ${FUNCTION_DIR}
 

@@ -49,7 +49,7 @@ class SvlessVectorDBParams:
     num_centroids_search: int = 4
     k: int = 4096
     n_probe: int = 1024
-    query_batch_size: int = 16,
+    query_batch_size: int = 16
     
     # Storage
     storage_bucket: str = None

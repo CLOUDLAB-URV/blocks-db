@@ -2,8 +2,10 @@ import time
 import logging
 import importlib
 
+from vectordb.utils.waiting import collect
 
-def initialize_database(filename, params, fexec, num_workers=16):
+
+def initialize_database(filename, params, fexec, num_workers=16, wait_timeout=None):
 
     init = time.time()
 
@@ -35,7 +37,7 @@ def initialize_database(filename, params, fexec, num_workers=16):
             obj_chunk_number=num_workers,
             runtime_memory=params.index_mem
         )
-        distribute_time = fexec.get_result()
+        distribute_time = collect(fexec, futures, wait_timeout)
         logging.info("Distribute phase complete")
 
     except ModuleNotFoundError:
@@ -72,7 +74,7 @@ def initialize_database(filename, params, fexec, num_workers=16):
             runtime_memory=params.index_mem,
         )
 
-    indexing_function_time = fexec.get_result()
+    indexing_function_time = collect(fexec, futures, wait_timeout)
 
     lambda_invocation_indexing = [
         f.stats["worker_func_start_tstamp"] - f.stats["host_job_create_tstamp"]

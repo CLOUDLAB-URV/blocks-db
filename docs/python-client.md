@@ -8,6 +8,11 @@ from vectordb.client import VectorDBClient
 client = VectorDBClient(bucket="your-bucket", region="us-east-1")
 # With SQS:
 client = VectorDBClient(bucket="your-bucket", region="us-east-1", sqs_queue_url="https://sqs...")
+# With a DynamoDB table other than BlocksDB-default:
+client = VectorDBClient(bucket="your-bucket", region="us-east-1", dynamodb_table_name="your-table")
+# Seconds a build or a query waits for functions that never start, counted from
+# the last start or finish (default: the function timeout + 60; 0 waits forever):
+client = VectorDBClient(bucket="your-bucket", region="us-east-1", wait_timeout=1200)
 ```
 
 ## Dataset Management
@@ -74,6 +79,14 @@ client = VectorDBClient(bucket="your-bucket", region="us-east-1", sqs_queue_url=
 | `auto_index` | `bool` | `False` | Trigger auto-indexing if threshold reached |
 | `tags` | `dict` | `None` | Batch-level tags for `put_vectors` |
 | `per_vector_tags` | `list[dict]` | `None` | Per-vector tags (3rd CSV column) |
+
+## Errors
+
+| Exception | Raised when |
+|-----------|-------------|
+| `NoIndex` (a `ValueError`) | A query names a dataset that has no index; a hybrid query raises it only when there are no pending vectors either |
+| `QueryMismatch` (a `ValueError`) | The query vectors do not have the index's dimension, the batch is empty, or `batch_size` is below 1 |
+| `FunctionsTimedOut` (a `TimeoutError`) | Functions of a build or a query never started, and none started or finished within the wait timeout |
 
 ## Examples
 

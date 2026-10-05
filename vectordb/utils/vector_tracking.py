@@ -16,16 +16,19 @@ from .s3_client import s3
 class VectorIndexTracker:
     DYNAMODB_TABLE_NAME = "BlocksDB-default"
 
-    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None):
+    def __init__(self, bucket: str, region: str = None, sqs_queue_url: str = None, table_name: str = None):
         self.bucket = bucket
         self.sqs_queue_url = sqs_queue_url
+        # the default keeps existing deployments working; an account shared by
+        # several deployments gives each one its own table
+        self.table_name = table_name or self.DYNAMODB_TABLE_NAME
         if region:
             self.dynamodb = boto3.resource("dynamodb", region_name=region)
             self.s3 = boto3.client("s3", region_name=region)
         else:
             self.dynamodb = boto3.resource("dynamodb")
             self.s3 = boto3.client("s3")
-        self.table = self.dynamodb.Table(self.DYNAMODB_TABLE_NAME)
+        self.table = self.dynamodb.Table(self.table_name)
         if sqs_queue_url:
             self.sqs = boto3.client("sqs", region_name=region) if region else boto3.client("sqs")
 

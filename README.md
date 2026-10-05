@@ -44,6 +44,19 @@ source venv/bin/activate
 pip install .
 ```
 
+### Development
+
+```bash
+# Install with the test runner
+pip install -e ".[dev]"
+
+# Run the unit tests: they use fakes and a local temporary directory, no AWS account needed
+pytest tests/unit
+
+# Run the integration tests: Lithops on this machine, no AWS account needed
+pytest tests/integration
+```
+
 ---
 
 ## 🚀 Quickstart (minimal workflow)
@@ -102,6 +115,20 @@ blocks-db configure --bucket your-s3-bucket --region us-east-1 --sqs
 ```
 
 This saves configuration to `~/.blocks-db-config/backend_config.json`.
+
+The client keeps its tracking state in the DynamoDB table `BlocksDB-default`.
+When several deployments share one AWS account, give each one its own table:
+`--table-name` on `configure` saves it, and the global `--table-name` flag or
+the `SVDB_DYNAMODB_TABLE` environment variable override it for one command.
+`setup --table-name` also saves the name it creates.
+
+A build or a query gives up when some functions never start and none has
+started or finished for the function timeout plus a minute (see
+`vectordb/README.md`, Common Pitfalls). To change that window:
+`--wait-timeout` on `configure` saves it, and the global `--wait-timeout`
+flag or the `SVDB_WAIT_TIMEOUT` environment variable override it for one
+command; `0` waits forever. `setup` keeps a saved value, and `configure` without
+`--wait-timeout` drops it.
 
 ---
 
@@ -205,17 +232,17 @@ This requires an **index config file**. Example (`config.json`):
 |-----------|-------------|
 | `features` | Vector dimensionality |
 | `implementation` | "blocks" (default) — block-based indexing |
-| `num_index` | Number of index blocks (default: 16) |
-| `k` | FAISS IVF k (default: 512) |
-| `n_probe` | FAISS IVF n_probe (default: 32) |
-| `index_mem` | Index Lambda memory in MB (default: 10240) |
-| `search_map_mem` | Search map Lambda memory in MB (default: 8192) |
+| `num_index` | Number of index blocks (default: 4) |
+| `k` | FAISS IVF k (default: 4096) |
+| `n_probe` | FAISS IVF n_probe (default: 1024) |
+| `index_mem` | Index Lambda memory in MB (default: 8192) |
+| `search_map_mem` | Search map Lambda memory in MB (default: 9216) |
 | `search_reduce_mem` | Search reduce Lambda memory in MB (default: 2048) |
 | `replication` | Replication factor |
 | `num_vectors` | Total vectors in dataset (-1 = auto-detect) |
-| `k_search` | K for search calculation |
-| `k_result` | K for final results |
-| `query_batch_size` | Query batch size |
+| `k_search` | K for search calculation (default: 5) |
+| `k_result` | K for final results (default: 5) |
+| `query_batch_size` | Query batch size (default: 16) |
 | `num_centroids_search` | Centroids to search |
 | `skip_init` | Skip initialization |
 | `skip_kmeans` | Skip k-means clustering |
@@ -261,9 +288,11 @@ Alternatively, each row in the CSV can carry its own tags as a JSON third
 column. This is more granular than batch-level `--tags`:
 
 ```
-1 0.1 0.2 ... {"source":"web","priority":"high"}
-2 0.4 0.5 ... {"source":"api","priority":"low"}
+1,0.1 0.2 ...,{"source":"web"}
+2,0.4 0.5 ...,"{""source"":""api"",""priority"":""low""}"
 ```
+
+The format is described under [File Formats](#-file-formats).
 
 When `--tags` and per-vector tags are both present, per-vector tags take
 precedence.
@@ -299,6 +328,11 @@ By default searches in index + pending. For index-only search:
 ```bash
 blocks-db query mydataset --file queries.csv --indexed-only
 ```
+
+A query that cannot be answered ends with a message and exit code 1 instead of
+an empty result: a dataset with no index and no pending vectors (with
+`--indexed-only`, no index at all), a query file with no vectors, a vector
+whose dimension is not the index's, or a `--batch-size` below 1.
 
 **Filtered search (requires tags on put):**
 ```bash
@@ -346,7 +380,7 @@ blocks-db status mydataset -v
 | Command | Description | Usage |
 |---------|-------------|-------|
 | `setup` | Create infrastructure (Lambda, DynamoDB, SQS/S3 triggers) | `blocks-db setup --bucket <b> [--sqs \| --s3express]` |
-| `configure` | Save default bucket and region | `blocks-db configure --bucket <b> --region <r> [--sqs]` |
+| `configure` | Save default bucket, region and DynamoDB table | `blocks-db configure --bucket <b> --region <r> [--sqs] [--table-name <t>]` |
 | `refresh-credentials` | Refresh AWS credentials in Lithops config | `blocks-db refresh-credentials` |
 | `update-threshold` | Update auto-indexer block size threshold | `blocks-db update-threshold [bytes] --dataset <name>` |
 | `initialize-database` | Upload dataset and build initial index | `blocks-db initialize-database <n> <csv> --config <j> [--build-local]` |
@@ -376,25 +410,39 @@ blocks-db get mydataset --pending
 
 ### Vectors CSV
 
-First column: ID (integer), rest: space-separated values.
+The ID (integer), a comma, then the values separated by spaces.
 
 ```
-1 0.1 0.2 0.3 ...
-2 0.4 0.5 0.6 ...
+1,0.1 0.2 0.3 ...
+2,0.4 0.5 0.6 ...
 ```
 
 ### Vectors CSV with Per-Vector Tags
 
-Add a third column with a JSON object for per-vector tags:
+Add a third column with a JSON object for per-vector tags. A JSON object
+with more than one key holds commas, so it is quoted as a CSV field, with
+its double quotes doubled:
 
 ```
-1 0.1 0.2 ... {"source":"web","priority":"high"}
-2 0.4 0.5 ... {"source":"api","priority":"low"}
+1,0.1 0.2 ...,{"source":"web"}
+2,0.4 0.5 ...,"{""source"":""api"",""priority"":""low""}"
 ```
 
 When the third column is present, `initialize-database` and the auto-indexer
-Lambda store the tags alongside each vector in the index. Vectors without a
-third column are untagged and match any filter.
+Lambda store the tags alongside each vector in the index. A vector without a
+third column, put without `--tags`, has no tags: a query with `--filter` on an
+indexed dataset does not return it, unless the filter matches no block and no
+pending file; the query then searches every pending vector without the filter.
+
+### Queries CSV
+
+The file of `query --file` holds one query per line: its values separated by
+spaces, with no ID.
+
+```
+0.1 0.2 0.3 ...
+0.4 0.5 0.6 ...
+```
 
 ---
 

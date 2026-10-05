@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+
+# Lithops runtime bundle built by `lithops runtime build`
+lithops_lambda.zip
+
+# The test dataset is rebuilt locally from its parts (see test-dataset/README.md)
+test-dataset/vectors_deep_100k.csv
+
+# Credentials never enter the repository
+.env
