@@ -412,6 +412,8 @@ def _run():
                         if len(row) > 2 and row[2].strip():
                             try:
                                 pvt = json.loads(row[2])
+                                if not isinstance(pvt, dict):
+                                    pvt = None
                             except (json.JSONDecodeError, ValueError):
                                 pass
                         key = client.tracker.put_vector(args.name, vec_id, vec, tags=tags, per_vector_tags=pvt)

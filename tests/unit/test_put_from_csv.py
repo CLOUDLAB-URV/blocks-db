@@ -73,3 +73,7 @@ class TestSingle:
         assert writes[0][0] == ["1", "0.1 0.2"]
         assert writes[1][0][:2] == ["2", "0.3 0.4"]
         assert json.loads(writes[1][0][2]) == {"source": "api"}
+
+    def test_tags_that_are_not_an_object_are_dropped(self, put):
+        # as the loader behind the other put paths does
+        assert put("1,0.1 0.2,[1]\n", "--single") == [[["1", "0.1 0.2"]]]
