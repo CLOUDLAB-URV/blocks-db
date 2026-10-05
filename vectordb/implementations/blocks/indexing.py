@@ -16,13 +16,13 @@ class FaissIVFIndex(IndexBuilder):
 
         index = faiss.index_factory(self.features, f"IVF{self.k},Flat")
 
-        x = np.array(vectors)
+        x = np.asarray(vectors, dtype=np.float32)
 
         index.train(x)
 
         index.nprobe = self.nprobe
 
-        index.add_with_ids(x, np.array(ids))
+        index.add_with_ids(x, np.asarray(ids, dtype=np.int64))
 
         return index
 

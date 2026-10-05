@@ -1,6 +1,8 @@
 import tempfile
 import os
 
+from botocore.exceptions import ClientError
+
 from .s3_client import s3
 from .vector_utils import validate_vectors, load_vectors_from_csv
 from .index_ops import reindex_after_update
@@ -68,15 +70,24 @@ def delete_dataset(bucket, dataset_name):
     except:
         pass
 
-    processed_prefix = f"processed/{dataset_name}/"
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=processed_prefix):
-            if "Contents" in page:
-                objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
-                s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
-    except:
-        pass
+    # processed and pending vectors, and the copies a parquet build uploaded
+    # from local files; a source read in place (s3://) is never under these
+    # prefixes
+    for prefix in (f"processed/{dataset_name}/", f"pending/{dataset_name}/", f"datasets/{dataset_name}/source/"):
+        # the copies of a corpus can be large: say what stays behind
+        refused = []
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                if "Contents" in page:
+                    objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
+                    # S3 lists the keys it could not delete in the answer
+                    refused += (s3.delete_objects(Bucket=bucket, Delete={"Objects": objects}) or {}).get("Errors", [])
+        except ClientError as error:
+            print(f"Could not delete {prefix}: {error}")
+        if refused:
+            print(f"Could not delete {len(refused)} objects under {prefix}"
+                  f" (first: {refused[0].get('Key')}, {refused[0].get('Code')})")
 
     from .index_ops import delete_indexes, delete_index_configs
     delete_indexes(bucket, dataset_name)

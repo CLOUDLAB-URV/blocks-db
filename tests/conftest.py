@@ -1,4 +1,6 @@
-"""Fixtures shared by every test."""
+"""Fixtures shared by every test. This conftest's directory also joins
+sys.path, so both suites can import tests/helpers.py without touching
+sys.path themselves."""
 
 import pytest
 

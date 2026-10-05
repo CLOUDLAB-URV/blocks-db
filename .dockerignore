@@ -1,0 +1,12 @@
+# Build context of the function image: the Dockerfile copies vectordb/,
+# pyproject.toml and the Lithops handler zip; nothing else is needed.
+.git
+.venv*
+venv
+.pytest_cache
+**/__pycache__
+*.egg-info
+docs
+tests
+test-dataset
+README.assets

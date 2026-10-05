@@ -1,0 +1,410 @@
+"""The client's parquet build: what it uploads, seals and cleans up."""
+
+import pytest
+from botocore.exceptions import ClientError
+
+from helpers import write_owi
+from vectordb import client as client_module
+from vectordb.client import IndexExists, NoIndex, NotAvailableOnParquet, VectorDBClient
+from vectordb.indexing.planner import PlanError
+from vectordb.utils.parquet import ParquetSourceError
+
+
+class FakeS3:
+    def __init__(self):
+        self.uploads: dict[str, str] = {}
+        self.deleted: list[str] = []
+        self.objects: dict[str, bytes] = {}
+
+    def upload_file(self, local, bucket, key):
+        self.uploads[key] = local
+
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        self.objects[Key] = Body
+
+    def get_paginator(self, _name):
+        objects = self.objects
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": key} for key in objects if key.startswith(Prefix)]}
+
+        return Paginator()
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ContentLength": len(self.objects[Key])}
+
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        found = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
+        return {"Contents": [{"Key": key} for key in found]} if found else {}
+
+    def delete_objects(self, Bucket, Delete):
+        self.deleted += [item["Key"] for item in Delete["Objects"]]
+
+
+class FakeTracker:
+    def __init__(self):
+        self.seeded = None
+        self.strict = None
+        self.fail = False
+
+    def initialize_next_id(self, dataset_name, next_id, strict=False):
+        if self.fail:
+            raise RuntimeError(f"cannot seed the id counter of '{dataset_name}'")
+        self.seeded = (dataset_name, next_id)
+        self.strict = strict
+
+
+def client_with(fake_s3=None) -> VectorDBClient:
+    client = object.__new__(VectorDBClient)
+    client.bucket = "bucket"
+    client.wait_timeout = None
+    client.s3 = fake_s3 or FakeS3()
+    client._no_parquet_index = set()
+    client.tracker = FakeTracker()
+    return client
+
+
+class StubDB:
+    """Stands in for ServerlessVectorDB, which would build a Lithops executor."""
+
+    built = None
+    checked = None
+    refuse = None  # an error check_plan raises
+    fail = False
+    half_build = None  # an objects dict: a failing build first writes one block there
+
+    def __init__(self, **params):
+        StubDB.params = params
+
+    def check_plan(self, plan):
+        StubDB.checked = plan
+        if StubDB.refuse:
+            raise StubDB.refuse
+
+    def indexing_from_plan(self, plan):
+        if StubDB.fail:
+            if StubDB.half_build is not None:
+                StubDB.half_build["indexes/ds/blocks/centroid_0.ann"] = b"half a build"
+            raise StubDB.fail if isinstance(StubDB.fail, BaseException) else RuntimeError("a block failed")
+        StubDB.built = plan
+        return {"rows": plan.total_vectors - 1, "rejected": 1, "blocks": [], "total_indexing_blocks": 0.1}
+
+
+@pytest.fixture
+def partitioned_corpus(tmp_path):
+    """Two partitions whose files share a name, as the publisher writes them."""
+    for language in ("spa", "eng"):
+        directory = tmp_path / "day" / f"language={language}"
+        directory.mkdir(parents=True)
+        write_owi(directory / "metadata_0_embeddings.parquet", rows=8, dimension=4, row_group_size=4)
+    return tmp_path / "day"
+
+
+@pytest.fixture
+def stub_db(monkeypatch):
+    StubDB.built = None
+    StubDB.checked = None
+    StubDB.refuse = None
+    StubDB.fail = False
+    StubDB.half_build = None
+    StubDB.params = None
+    monkeypatch.setattr(client_module, "ServerlessVectorDB", StubDB)
+    return StubDB
+
+
+def config(**overrides):
+    values = {"implementation": "blocks", "num_index": 2, "k": 1, "features": 4}
+    values.update(overrides)
+    return values
+
+
+class TestIndexParquetDataset:
+    def test_upload_keys_keep_the_partition_path(self, partitioned_corpus, stub_db):
+        from vectordb.indexing.prepare import expand_sources
+
+        client = client_with()
+        sources = expand_sources(str(partitioned_corpus))
+        assert len(sources) == 2  # both partitions found, same file name
+
+        client.index_parquet_dataset("ds", sources, config())
+
+        keys = sorted(client.s3.uploads)
+        assert keys == [
+            "datasets/ds/source/language=eng/metadata_0_embeddings.parquet",
+            "datasets/ds/source/language=spa/metadata_0_embeddings.parquet",
+        ]
+        # the plan the workers receive points at what was uploaded
+        uris = {part.uri for block in stub_db.built.blocks for part in block.ranges}
+        assert all(uri.startswith("s3://bucket/datasets/ds/source/") for uri in uris)
+        assert len(uris) == 2
+
+    def test_the_build_is_opened_with_the_wait_timeout_of_the_client(self, partitioned_corpus, stub_db):
+        from vectordb.indexing.prepare import expand_sources
+
+        client = client_with()
+        client.wait_timeout = 300
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert stub_db.params["wait_timeout"] == 300
+
+    def test_the_sealed_config_records_what_was_indexed(self, partitioned_corpus, stub_db):
+        import json
+
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        sealed = json.loads(client.s3.objects["indexes/ds/blocks/config.json"])
+        assert sealed["source_format"] == "parquet"
+        assert sealed["source_rows"] == 16 and sealed["num_vectors"] == 15 and sealed["rejected"] == 1
+        assert sealed["block_ranges"] == [[0, 0, 7], [1, 8, 15]]
+        assert sealed["features"] == 4
+        # the id counter is seeded above the footer total, so the gap the
+        # rejected row left is never handed to a later put
+        assert client.tracker.seeded == ("ds", 16)
+        assert client.tracker.strict is True
+
+    def test_a_refused_plan_uploads_nothing(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        sources = expand_sources(str(partitioned_corpus))
+        with pytest.raises(PlanError, match="k .* must be declared"):
+            client.index_parquet_dataset("ds", sources, {"implementation": "blocks", "num_index": 2, "features": 4})
+        assert client.s3.uploads == {}
+        assert stub_db.built is None
+
+    def test_a_local_source_that_does_not_exist_is_refused_by_name(self, tmp_path, stub_db):
+        client = client_with()
+        with pytest.raises(ParquetSourceError, match="missing.parquet: not found"):
+            client.index_parquet_dataset("ds", [str(tmp_path / "missing.parquet")], config())
+        assert client.s3.uploads == {} and client.tracker.seeded is None
+
+    def test_a_counter_that_cannot_be_seeded_stops_the_build_before_it_starts(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.tracker.fail = True
+        with pytest.raises(RuntimeError, match="cannot seed the id counter"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.s3.uploads == {}
+        assert stub_db.built is None
+        assert client.s3.objects == {}
+
+    def test_without_saving_the_config_the_counter_is_not_touched(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.tracker.fail = True  # would raise if it were called
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), save_config=False)
+        assert stub_db.built is not None
+
+    def test_a_failed_build_leaves_no_blocks_and_no_config(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        stub_db.half_build = client.s3.objects
+        stub_db.fail = True
+        with pytest.raises(RuntimeError, match="a block failed"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.s3.deleted == ["indexes/ds/blocks/centroid_0.ann"]
+        assert "indexes/ds/blocks/config.json" not in client.s3.objects
+
+
+    def test_a_second_build_with_the_same_name_is_refused_before_anything_happens(self, partitioned_corpus, stub_db):
+        # an index is immutable: replacing it is a decision, never a side effect
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        with pytest.raises(IndexExists, match="replace"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.s3.uploads == {} and client.s3.deleted == []
+        assert client.tracker.seeded is None and stub_db.built is None
+
+    @pytest.mark.parametrize("key", ["datasets/ds/source.csv", "pending/ds/1.csv"])
+    def test_a_name_that_holds_a_csv_dataset_is_refused_even_with_replace(self, partitioned_corpus, stub_db, key):
+        # queries of the name would still search its pending vectors, whose
+        # ids may be the new index's, so the CSV dataset goes with
+        # delete-dataset and never as a side effect of a build
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects[key] = b"1,0.1 0.2 0.3 0.4\n"
+        with pytest.raises(IndexExists, match=r"'ds' holds a CSV dataset .*; delete it with delete_dataset\(\) \(delete-dataset\)"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.uploads == {} and client.s3.deleted == []
+        assert client.tracker.seeded is None and stub_db.built is None
+
+    def test_a_refused_look_at_source_csv_is_not_taken_for_its_absence(self, partitioned_corpus, stub_db):
+        class DeniedHead(FakeS3):
+            def head_object(self, Bucket, Key):
+                raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject")
+
+        client = client_with(DeniedHead())
+        from vectordb.indexing.prepare import expand_sources
+
+        with pytest.raises(ClientError, match="403"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.tracker.seeded is None and stub_db.built is None
+
+    def test_replace_deletes_the_previous_index_and_builds(self, partitioned_corpus, stub_db, capsys):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        client.s3.objects["indexes/ds/blocks/config.json"] = b"{}"
+        # the copies of a previous build from local files are not a CSV dataset
+        client.s3.objects["datasets/ds/source/language=spa/metadata_0_embeddings.parquet"] = b"previous upload"
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert sorted(client.s3.deleted) == ["indexes/ds/blocks/centroid_0.ann", "indexes/ds/blocks/config.json"]
+        assert stub_db.built is not None and "indexes/ds/blocks/config.json" in client.s3.objects
+        # what was removed was the index being replaced, not a failed build
+        assert "Removed 2 objects of the previous index under indexes/ds/blocks/" in capsys.readouterr().out
+
+    def test_the_plan_is_checked_with_the_uris_the_functions_will_read(self, partitioned_corpus, stub_db):
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        uris = {part.uri for block in stub_db.checked.blocks for part in block.ranges}
+        assert uris == {
+            "s3://bucket/datasets/ds/source/language=eng/metadata_0_embeddings.parquet",
+            "s3://bucket/datasets/ds/source/language=spa/metadata_0_embeddings.parquet",
+        }
+        assert stub_db.params["dataset"] == "ds" and stub_db.params["storage_bucket"] == "bucket"
+
+    def test_a_plan_too_large_for_the_functions_stops_before_any_side_effect(self, partitioned_corpus, stub_db):
+        # Lithops refuses the map only when it is called, after the old
+        # index is gone, the counter is seeded and the files are uploaded
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        stub_db.refuse = PlanError("the arguments of the 2 build tasks weigh 5.22 MiB")
+        with pytest.raises(PlanError, match="5.22 MiB"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.deleted == [] and client.s3.uploads == {}
+        assert client.tracker.seeded is None and stub_db.built is None
+
+    def test_a_counter_that_cannot_be_seeded_leaves_the_previous_index_intact(self, partitioned_corpus, stub_db):
+        # the seed is the first write of a build; with replace it must also
+        # come before the old index is deleted, or a refused write leaves
+        # nothing to search
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.s3.objects["indexes/ds/blocks/centroid_0.ann"] = b"an index"
+        client.s3.objects["indexes/ds/blocks/config.json"] = b"{}"
+        client.tracker.fail = True
+        with pytest.raises(RuntimeError, match="cannot seed the id counter"):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config(), replace=True)
+        assert client.s3.deleted == [] and client.s3.uploads == {}
+        assert client.s3.objects["indexes/ds/blocks/centroid_0.ann"] == b"an index"
+        assert stub_db.built is None
+
+    def test_a_put_after_the_build_is_refused_by_the_client_that_built_it(self, partitioned_corpus, stub_db):
+        # the client remembers a name found without a parquet index; its own
+        # build must not leave it trusting what it knew before
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        client.tracker.put_vectors = lambda *args, **kwargs: "pending/ds/1.csv"
+        assert client.put_vectors("ds", [(1, [0.0, 0.0, 0.0, 1.0])]) == 1  # no index yet
+        client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        client.s3.objects["indexes/ds/blocks/idmap/block_0.parquet"] = b"written by the functions"
+        with pytest.raises(NotAvailableOnParquet, match="immutable"):
+            client.put_vectors("ds", [(2, [0.0, 0.0, 0.0, 1.0])])
+
+    def test_an_interrupted_build_is_cleaned_up_like_a_failed_one(self, partitioned_corpus, stub_db):
+        # Ctrl-C raises KeyboardInterrupt, which is not an Exception: the
+        # cleanup must not depend on the kind of failure
+        client = client_with()
+        from vectordb.indexing.prepare import expand_sources
+
+        stub_db.half_build = client.s3.objects
+        stub_db.fail = KeyboardInterrupt()
+        with pytest.raises(KeyboardInterrupt):
+            client.index_parquet_dataset("ds", expand_sources(str(partitioned_corpus)), config())
+        assert client.s3.deleted == ["indexes/ds/blocks/centroid_0.ann"]
+        assert "indexes/ds/blocks/config.json" not in client.s3.objects
+
+
+def s3_error(code):
+    """A config read that fails the way boto3 reports it."""
+    error = ClientError({"Error": {"Code": code, "Message": code}}, "GetObject")
+
+    def load(bucket, dataset, implementation, num_index):
+        raise error
+
+    return load
+
+
+class TestProvenance:
+    @pytest.fixture
+    def idmap_bucket(self):
+        """A client over two idmap parts, and the list of parts it fetches."""
+        import io
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        def part(ids):
+            sink = io.BytesIO()
+            pq.write_table(
+                pa.table({
+                    "id": pa.array(ids, pa.int64()),
+                    "record_id": [f"doc-{i}" for i in ids],
+                    "chunk_idx": pa.array([0] * len(ids), pa.int64()),
+                }),
+                sink,
+            )
+            return sink.getvalue()
+
+        fake = FakeS3()
+        fake.objects["indexes/ds/blocks/idmap/block_0.parquet"] = part([0, 1])
+        fake.objects["indexes/ds/blocks/idmap/block_1.parquet"] = part([2, 3])
+        fetched = []
+
+        def get_object(Bucket, Key):
+            fetched.append(Key)
+            return {"Body": io.BytesIO(fake.objects[Key])}
+
+        fake.get_object = get_object
+        return client_with(fake), fetched
+
+    def test_only_the_parts_covering_the_ids_are_fetched(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(
+            client_module, "load_index_config",
+            lambda bucket, dataset, implementation, num_index: {"block_ranges": [[0, 0, 1], [1, 2, 3]]},
+        )
+
+        assert client.provenance("ds", [3]) == {3: ("doc-3", 0)}
+        assert fetched == ["indexes/ds/blocks/idmap/block_1.parquet"]
+
+    def test_a_config_without_block_ranges_reads_every_part(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", lambda *args: {"num_index": 2})
+
+        assert client.provenance("ds", [3]) == {3: ("doc-3", 0)}
+        assert fetched == ["indexes/ds/blocks/idmap/block_0.parquet", "indexes/ds/blocks/idmap/block_1.parquet"]
+
+    def test_a_dataset_without_an_index_is_refused_by_name(self, idmap_bucket, monkeypatch):
+        # a misspelled name must not turn into a read of every part and an empty answer
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", s3_error("NoSuchKey"))
+
+        with pytest.raises(NoIndex, match="No index found for dataset 'typo'"):
+            client.provenance("typo", [3])
+        assert fetched == []
+
+    def test_a_config_read_that_fails_is_not_hidden_behind_a_full_read(self, idmap_bucket, monkeypatch):
+        client, fetched = idmap_bucket
+        monkeypatch.setattr(client_module, "load_index_config", s3_error("SlowDown"))
+
+        with pytest.raises(ClientError, match="SlowDown"):
+            client.provenance("ds", [3])
+        assert fetched == []

@@ -66,22 +66,132 @@ class TestAnEmptyQuery:
             client.query_from_file("ds", str(empty))
 
 
+@pytest.fixture
+def queries(tmp_path):
+    path = tmp_path / "queries.csv"
+    path.write_text("0.0 1.0\n")
+    return str(path)
+
+
+# The public ways to ask for the vector (0, 1), each giving back (results, times)
+def query(client, path):
+    hit, times = client.query("ds", [0.0, 1.0], k=1)
+    return [hit], times
+
+
+def query_batch(client, path):
+    return client.query_batch("ds", [[0.0, 1.0]], k=1)
+
+
+def query_hybrid(client, path):
+    return client.query_hybrid("ds", [[0.0, 1.0]], k=1)
+
+
+def query_from_file(client, path):
+    return client.query_from_file("ds", path, k=1)
+
+
+def query_indexed_only(client, path):
+    return client.query_indexed_only("ds", vector=[0.0, 1.0], k=1)
+
+
+def query_not_hybrid(client, path):
+    hit, times = client.query("ds", [0.0, 1.0], k=1, hybrid=False)
+    return [hit], times
+
+
+def query_batch_not_hybrid(client, path):
+    return client.query_batch("ds", [[0.0, 1.0]], k=1, hybrid=False)
+
+
+def query_from_file_not_hybrid(client, path):
+    return client.query_from_file("ds", path, k=1, hybrid=False)
+
+
+HYBRID = [query, query_batch, query_hybrid, query_from_file]
+INDEXED_ONLY = [query_indexed_only, query_not_hybrid, query_batch_not_hybrid, query_from_file_not_hybrid]
+
+
+def names(ask):
+    return ask.__name__
+
+
 class TestADatasetWithNothingToSearch:
-    def test_a_query_without_an_index_says_so_instead_of_answering_nothing(self, monkeypatch):
+    @pytest.mark.parametrize("ask", HYBRID, ids=names)
+    def test_a_query_without_an_index_says_so_instead_of_answering_nothing(self, monkeypatch, queries, ask):
         # empty results and exit code 0 read like "no neighbors found"
         client = client_with(monkeypatch, indexes=[])
         with pytest.raises(NoIndex, match="No index found for dataset 'ds'"):
-            client.query_batch("ds", [[0.0, 1.0]], k=1)
+            ask(client, queries)
 
-    def test_pending_vectors_are_still_searched_when_there_is_no_index(self, monkeypatch):
+    @pytest.mark.parametrize("ask", HYBRID, ids=names)
+    def test_pending_vectors_are_still_searched_when_there_is_no_index(self, monkeypatch, queries, ask):
         client = client_with(monkeypatch, indexes=[], pending=[(7, [0.0, 1.0])])
         monkeypatch.setattr(
             "vectordb.utils.hybrid_search.brute_force_search",
             lambda vectors, unindexed, k: [[(7, 0.0)]],
         )
-        results, times = client.query_batch("ds", [[0.0, 1.0]], k=1)
+        results, times = ask(client, queries)
         assert results == [[(7, 0.0, "pending")]]
         assert times["fallback"].startswith("no index")
+
+    @pytest.mark.parametrize("pending", [[], [(7, [0.0, 1.0])]], ids=["nothing pending", "pending vectors"])
+    @pytest.mark.parametrize("ask", INDEXED_ONLY, ids=names)
+    def test_an_indexed_only_query_without_an_index_says_so_whatever_is_pending(self, monkeypatch, queries, ask, pending):
+        # an empty answer with times["error"] would read as a search that
+        # found nothing
+        client = client_with(monkeypatch, indexes=[], pending=pending)
+        with pytest.raises(NoIndex, match="No index found for dataset 'ds'"):
+            ask(client, queries)
+
+
+class TestADatasetWithAnIndexAndNothingPending:
+    @pytest.mark.parametrize("ask", HYBRID, ids=names)
+    def test_a_hybrid_query_answers_with_the_neighbors_of_the_search(self, monkeypatch, queries, ask):
+        client = client_with(monkeypatch, indexes=[("blocks", 4)], search=lambda *a, **k: ([[(3, 0.5, "centroid_0")]], {}))
+        results, times = ask(client, queries)
+        assert results == [[(3, 0.5, "centroid_0")]]
+        assert times["hybrid_search"] is True and times["has_pending"] is False
+
+    @pytest.mark.parametrize("ask", INDEXED_ONLY, ids=names)
+    def test_an_indexed_only_query_answers_with_the_neighbors_of_the_search(self, monkeypatch, queries, ask):
+        client = client_with(monkeypatch, indexes=[("blocks", 4)], search=lambda *a, **k: ([[(3, 0.5, "centroid_0")]], {}))
+        results, times = ask(client, queries)
+        assert results == [[(3, 0.5, "centroid_0")]]
+        assert "hybrid_search" not in times
+
+    @pytest.mark.parametrize("ask", HYBRID + INDEXED_ONLY, ids=names)
+    def test_no_neighbors_is_an_empty_answer_not_a_missing_index(self, monkeypatch, queries, ask):
+        client = client_with(monkeypatch, indexes=[("blocks", 4)], search=lambda *a, **k: ([], {}))
+        results, times = ask(client, queries)
+        assert results == [[]]
+
+
+class TestWhatAQueryHandsToTheFunctions:
+    def test_the_source_list_and_block_ranges_of_a_parquet_index_stay_in_config_json(self, monkeypatch):
+        # every map and reduce task carries the parameters; with a few
+        # dozen source files the two lists push a task over what Lithops
+        # sends inline, and provenance() reads them from config.json anyway
+        client = client_with(monkeypatch, indexes=[("blocks", 4)])
+        sealed = {
+            "num_index": 4, "features": 2, "k": 1, "source_format": "parquet",
+            "source_keys": [f"s3://bucket/datasets/ds/source/metadata_{i}_embeddings.parquet" for i in range(63)],
+            "block_ranges": [[0, 0, 9], [1, 10, 19], [2, 20, 29], [3, 30, 39]],
+        }
+        handed = {}
+
+        def open_index(**config):
+            handed.update(config)
+            return SimpleNamespace(params=SimpleNamespace(features=2), search=lambda *a, **k: ([[(3, 0.0, "indexed")]], {}))
+
+        monkeypatch.setattr(client_module, "load_index_config", lambda *args: dict(sealed))
+        monkeypatch.setattr(client_module, "ServerlessVectorDB", open_index)
+
+        results, _ = client.query_batch("ds", [[0.0, 1.0]], k=1)
+
+        assert results == [[(3, 0.0, "indexed")]]
+        assert "source_keys" not in handed and "block_ranges" not in handed
+        assert handed["source_format"] == "parquet" and handed["k"] == 1 and handed["dataset"] == "ds"
 
 
 class TestASearchThatFailsIsNotAnEmptyAnswer:

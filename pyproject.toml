@@ -18,7 +18,8 @@ dependencies = [
     "faiss-cpu",
     "pandas",
     "boto3",
-    "numpy"
+    "numpy",
+    "pyarrow>=25,<26"
 ]
 
 [project.optional-dependencies]
