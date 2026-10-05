@@ -158,8 +158,8 @@ class VectorIndexTracker:
 
         return key
 
-    def put_vector(self, dataset_name: str, vector_id: int, vector: List[float], tags: dict = None) -> str:
-        return self.put_vectors(dataset_name, [(vector_id, vector)], tags=tags)
+    def put_vector(self, dataset_name: str, vector_id: int, vector: List[float], tags: dict = None, per_vector_tags: dict = None) -> str:
+        return self.put_vectors(dataset_name, [(vector_id, vector)], tags=tags, per_vector_tags=[per_vector_tags] if per_vector_tags else None)
 
     def _update_pending_tracking(self, dataset_name: str, vector_ids: List[int], file_key: str, tags: dict = None):
         try:
