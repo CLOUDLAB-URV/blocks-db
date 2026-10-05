@@ -77,7 +77,7 @@ def _get_vector_by_range(bucket, dataset_name, block, vid):
         if not raw_line:
             continue
         line = raw_line.decode()
-        id_str, vec_str = line.split(",", 1)
+        id_str, vec_str = line.split(",", 2)[:2]
         if int(id_str) == vid:
             return list(map(float, vec_str.split()))
     return None
@@ -94,7 +94,7 @@ def _get_from_full_csv(bucket, dataset_name, ids):
         if not raw_line:
             continue
         line = raw_line.decode()
-        id_str, vec_str = line.split(",", 1)
+        id_str, vec_str = line.split(",", 2)[:2]
         current_id = int(id_str)
         if current_id > max_id:
             break
@@ -138,7 +138,7 @@ def _get_from_pending(bucket, dataset_name, ids):
         for raw_line in body.iter_lines():
             if not raw_line or raw_line.decode().startswith("id,"):
                 continue
-            id_str, vec_str = raw_line.decode().split(",", 1)
+            id_str, vec_str = raw_line.decode().split(",", 2)[:2]
             vid = int(id_str)
             if vid in ids:
                 entry = {"vector": list(map(float, vec_str.split())), "source": "pending", "file": obj["Key"]}
@@ -158,7 +158,7 @@ def list_vectors(bucket, dataset_name, limit=100):
         if not raw_line:
             continue
         line = raw_line.decode()
-        id_str, vec_str = line.split(",", 1)
+        id_str, vec_str = line.split(",", 2)[:2]
         results[int(id_str)] = list(map(float, vec_str.split()))
         if len(results) >= limit:
             break
@@ -177,7 +177,7 @@ def list_vectors_paginated(bucket, dataset_name, start=0, limit=100):
             continue
         if current_index >= start:
             line = raw_line.decode()
-            id_str, vec_str = line.split(",", 1)
+            id_str, vec_str = line.split(",", 2)[:2]
             results[int(id_str)] = list(map(float, vec_str.split()))
             if len(results) >= limit:
                 break
