@@ -24,7 +24,7 @@ def get_last_id_and_dim(bucket, key):
     last_line = lines[-1]
 
     try:
-        id_part, vector_part = last_line.split(",", 1)
+        id_part, vector_part = last_line.split(",", 2)[:2]
     except ValueError:
         raise ValueError("Malformed CSV: missing comma separator.")
 
